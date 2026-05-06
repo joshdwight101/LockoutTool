@@ -1,3 +1,7 @@
+<#
+Author: Joshua Dwight
+GitHub: https://github.com/joshdwight101
+#>
 [CmdletBinding()]
 param(
     [ValidateSet('Gui','Help','Discover','Locked','Analyze','UnlockPreview','UnlockCommit','ConnectCloud','CloudSignins','InvestigateUser','ExportReport')]
@@ -213,7 +217,7 @@ function Show-LockoutGui {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'Lockout Intelligence - PowerShell GUI'
+    $form.Text = 'Lockout Intelligence - PowerShell GUI | Author: Joshua Dwight (@joshdwight101)'
     $form.Width = 1280; $form.Height = 820
 
     $lblSearch = New-Object Windows.Forms.Label
@@ -241,6 +245,9 @@ function Show-LockoutGui {
     $grid.SelectionMode = 'FullRowSelect'
     $grid.MultiSelect = $false
     $grid.AutoSizeColumnsMode = 'Fill'
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    $grid.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+    $grid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Black
 
     $log = New-Object Windows.Forms.TextBox
     $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,635,1240,140)
@@ -276,22 +283,32 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
             $items = $items | Where-Object { $_.SamAccountName -match $q -or $_.UserPrincipalName -match $q -or $_.DisplayName -match $q }
         }
 
-        $rows = foreach ($u in $items) {
-            [pscustomobject]@{
-                Select = $false
-                SamAccountName = $u.SamAccountName
-                DisplayName = $u.DisplayName
-                UserPrincipalName = $u.UserPrincipalName
-                Enabled = $u.Enabled
-                LockedOut = $u.LockedOut
-                BadLogonCount = $u.BadLogonCount
-                LastBadPasswordAttempt = $u.LastBadPasswordAttempt
-            }
+        $table = New-Object System.Data.DataTable
+        [void]$table.Columns.Add('Select', [bool])
+        [void]$table.Columns.Add('SamAccountName', [string])
+        [void]$table.Columns.Add('DisplayName', [string])
+        [void]$table.Columns.Add('UserPrincipalName', [string])
+        [void]$table.Columns.Add('Enabled', [string])
+        [void]$table.Columns.Add('LockedOut', [string])
+        [void]$table.Columns.Add('BadLogonCount', [string])
+        [void]$table.Columns.Add('LastBadPasswordAttempt', [string])
+
+        foreach ($u in $items) {
+            $r = $table.NewRow()
+            $r['Select'] = $false
+            $r['SamAccountName'] = [string]$u.SamAccountName
+            $r['DisplayName'] = [string]$u.DisplayName
+            $r['UserPrincipalName'] = [string]$u.UserPrincipalName
+            $r['Enabled'] = [string]$u.Enabled
+            $r['LockedOut'] = [string]$u.LockedOut
+            $r['BadLogonCount'] = [string]$u.BadLogonCount
+            $r['LastBadPasswordAttempt'] = [string]$u.LastBadPasswordAttempt
+            [void]$table.Rows.Add($r)
         }
 
-        $grid.DataSource = @($rows)
+        $grid.DataSource = $table
         if ($grid.Columns['Select']) { $grid.Columns['Select'].ReadOnly = $false }
-        Write-Log "Loaded $(@($rows).Count) accounts into grid."
+        Write-Log "Loaded $($table.Rows.Count) accounts into grid."
     }
 
     function Analyze-SelectedUser {

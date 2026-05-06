@@ -1,5 +1,8 @@
 # LockoutTool - Hybrid Lockout Intelligence Console
 
+Author: Joshua Dwight  
+GitHub: https://github.com/joshdwight101
+
 This repository provides exactly two apps for the same Lockout Intelligence platform:
 
 1. **PowerShell GUI app (with embedded C# intelligence):** `scripts/LockoutIntelligence.ps1`
