@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0] - 2026-05-06
+### Added
+- Per-user `LockoutObservedOnDC` aggregation from multi-DC lockout queries.
+- Improved locked-user retrieval using per-DC LDAP lockout queries (`lockoutTime>=1`) with fallback.
+
+### Changed
+- Title bars and About dialog updated to `v1.2`.
+
 ## [1.1.0] - 2026-05-06
 ### Added
 - Resizable/anchored grid behavior with horizontal scrolling.

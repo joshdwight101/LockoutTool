@@ -217,7 +217,7 @@ function Show-LockoutGui {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'Lockout Intelligence v1.1 - by Joshua Dwight'
+    $form.Text = 'Lockout Intelligence v1.2 - by Joshua Dwight'
     $form.Width = 1280; $form.Height = 820
 
     $menu = New-Object Windows.Forms.MenuStrip
@@ -257,7 +257,7 @@ Tips:
         $aboutForm.Text = 'About Lockout Intelligence'
         $aboutForm.Width = 460; $aboutForm.Height = 220
         $lbl = New-Object Windows.Forms.Label
-        $lbl.Text = 'Lockout Intelligence v1.1
+        $lbl.Text = 'Lockout Intelligence v1.2
 Author: Joshua Dwight
 GitHub:'
         $lbl.SetBounds(15,15,420,60)
@@ -341,25 +341,42 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         Ensure-ADModule
 
         if ($chkLocked.Checked) {
+            $dcMap = @{}
             foreach ($dc in (Get-ADDomainController -Filter *)) {
                 try {
-                    $dcLocked = Search-ADAccount -LockedOut -UsersOnly -Server $dc.HostName |
-                        Get-ADUser -Server $dc.HostName -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt
-                    foreach ($u in $dcLocked) { $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue $dc.HostName -Force }
-                    $combined += $dcLocked
+                    # lockoutTime is non-zero on DCs with lockout evidence for the account
+                    $dcLocked = Get-ADUser -Server $dc.HostName -LDAPFilter '(&(objectCategory=person)(objectClass=user)(lockoutTime>=1))' -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt,lockoutTime
+                    foreach ($u in $dcLocked) {
+                        $key = [string]$u.SamAccountName
+                        if (-not $dcMap.ContainsKey($key)) { $dcMap[$key] = New-Object System.Collections.Generic.List[string] }
+                        if (-not $dcMap[$key].Contains($dc.HostName)) { $dcMap[$key].Add($dc.HostName) }
+                        $combined += $u
+                    }
                 } catch {
                     Write-Log "WARN: Locked query failed on $($dc.HostName): $($_.Exception.Message)"
                 }
             }
 
-            # fallback against default domain controller for environments where Search-ADAccount misses locked objects
+            # fallback path still included
             try {
                 $fallback = Get-ADUser -Filter * -Properties LockedOut,GivenName,Surname,DisplayName,UserPrincipalName,Enabled,BadLogonCount,LastBadPasswordAttempt |
                     Where-Object { $_.LockedOut -eq $true }
-                foreach ($u in $fallback) { if (-not $u.PSObject.Properties['LockoutObservedOnDC']) { $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue 'DefaultDC' -Force } }
-                $combined += $fallback
+                foreach ($u in $fallback) {
+                    $key = [string]$u.SamAccountName
+                    if (-not $dcMap.ContainsKey($key)) { $dcMap[$key] = New-Object System.Collections.Generic.List[string] }
+                    if (-not $dcMap[$key].Contains('DefaultDC')) { $dcMap[$key].Add('DefaultDC') }
+                    $combined += $u
+                }
             } catch {
                 Write-Log "WARN: Locked fallback query failed: $($_.Exception.Message)"
+            }
+
+            # stamp origin DC list onto combined users
+            foreach ($u in $combined) {
+                $key = [string]$u.SamAccountName
+                if ($dcMap.ContainsKey($key)) {
+                    $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue (($dcMap[$key] | Sort-Object -Unique) -join ',') -Force
+                }
             }
         }
 

@@ -25,7 +25,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Lockout Intelligence - C# GUI | Author: Joshua Dwight (@joshdwight101)";
+        Text = "Lockout Intelligence v1.2 - by Joshua Dwight";
         Width = 1200;
         Height = 760;
 
