@@ -218,11 +218,11 @@ function Show-LockoutGui {
 
     $identity = New-Object Windows.Forms.TextBox
     $identity.SetBounds(10,10,300,25)
-    $identity.PlaceholderText = 'identity'
+    $identity.Text = ''
 
     $users = New-Object Windows.Forms.TextBox
     $users.SetBounds(320,10,220,25)
-    $users.PlaceholderText = 'user1,user2'
+    $users.Text = ''
 
     $hours = New-Object Windows.Forms.NumericUpDown
     $hours.SetBounds(550,10,60,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
