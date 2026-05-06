@@ -216,49 +216,112 @@ function Show-LockoutGui {
     $form.Text = 'Lockout Intelligence - PowerShell GUI'
     $form.Width = 1200; $form.Height = 760
 
+    $lblIdentity = New-Object Windows.Forms.Label
+    $lblIdentity.Text = 'Identity (sAMAccountName or UPN)'
+    $lblIdentity.SetBounds(10,8,240,18)
+
     $identity = New-Object Windows.Forms.TextBox
-    $identity.SetBounds(10,10,300,25)
-    $identity.Text = ''
+    $identity.SetBounds(10,26,300,25)
+
+    $lblUsers = New-Object Windows.Forms.Label
+    $lblUsers.Text = 'Bulk Unlock Users (comma separated)'
+    $lblUsers.SetBounds(320,8,240,18)
 
     $users = New-Object Windows.Forms.TextBox
-    $users.SetBounds(320,10,220,25)
-    $users.Text = ''
+    $users.SetBounds(320,26,220,25)
+
+    $lblHours = New-Object Windows.Forms.Label
+    $lblHours.Text = 'Lookback Hours'
+    $lblHours.SetBounds(550,8,120,18)
 
     $hours = New-Object Windows.Forms.NumericUpDown
-    $hours.SetBounds(550,10,60,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
+    $hours.SetBounds(550,26,90,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
 
-    $output = New-Object Windows.Forms.TextBox
-    $output.Multiline = $true; $output.ScrollBars = 'Both'; $output.SetBounds(10,80,1160,630)
+    $grid = New-Object Windows.Forms.DataGridView
+    $grid.SetBounds(10,90,1160,500)
+    $grid.ReadOnly = $true
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToDeleteRows = $false
+    $grid.SelectionMode = 'FullRowSelect'
+    $grid.MultiSelect = $false
 
-    function Set-Output($data) {
-        $output.Text = ($data | Out-String)
+    $log = New-Object Windows.Forms.TextBox
+    $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,600,1160,110)
+
+    function Set-GridData($data) {
+        if (-not $data) { $grid.DataSource = $null; return }
+        if ($data -is [string]) { $log.Text = $data; return }
+        $grid.DataSource = @($data)
     }
 
+    function Set-Log($txt) {
+        $log.Text = ($txt | Out-String)
+    }
+
+    $context = New-Object Windows.Forms.ContextMenuStrip
+    $miAnalyze = $context.Items.Add('Analyze Selected User')
+    $miPreview = $context.Items.Add('Unlock Preview Selected User')
+    $miCommit = $context.Items.Add('Unlock Commit Selected User')
+    $miCopy = $context.Items.Add('Copy Selected Cell')
+
+    $miAnalyze.add_Click({
+        if ($grid.SelectedRows.Count -eq 0) { return }
+        $row = $grid.SelectedRows[0]
+        $name = [string]$row.Cells['SamAccountName'].Value
+        if (-not $name) { $name = [string]$row.Cells[0].Value }
+        $script:Identity = $name; $identity.Text = $name; $script:Hours = [int]$hours.Value
+        Set-Log (Invoke-Analyze)
+    })
+
+    $miPreview.add_Click({
+        if ($grid.SelectedRows.Count -eq 0) { return }
+        $row = $grid.SelectedRows[0]
+        $name = [string]$row.Cells['SamAccountName'].Value
+        if (-not $name) { $name = [string]$row.Cells[0].Value }
+        $script:Users = @($name)
+        Set-Log (Invoke-Unlock -Commit:$false)
+    })
+
+    $miCommit.add_Click({
+        if ($grid.SelectedRows.Count -eq 0) { return }
+        $row = $grid.SelectedRows[0]
+        $name = [string]$row.Cells['SamAccountName'].Value
+        if (-not $name) { $name = [string]$row.Cells[0].Value }
+        $script:Users = @($name)
+        Set-Log (Invoke-Unlock -Commit:$true)
+    })
+
+    $miCopy.add_Click({
+        if ($grid.SelectedCells.Count -gt 0) { [Windows.Forms.Clipboard]::SetText([string]$grid.SelectedCells[0].Value) }
+    })
+
+    $grid.ContextMenuStrip = $context
+
     $btnDiscover = New-Object Windows.Forms.Button
-    $btnDiscover.Text='Discover'; $btnDiscover.SetBounds(10,45,90,28)
-    $btnDiscover.Add_Click({ Set-Output (Invoke-Discover) })
+    $btnDiscover.Text='Discover'; $btnDiscover.SetBounds(10,56,90,28)
+    $btnDiscover.Add_Click({ Set-GridData (Invoke-Discover) })
 
     $btnLocked = New-Object Windows.Forms.Button
-    $btnLocked.Text='Locked'; $btnLocked.SetBounds(110,45,90,28)
-    $btnLocked.Add_Click({ $script:Search=''; Set-Output (Invoke-Locked) })
+    $btnLocked.Text='Locked'; $btnLocked.SetBounds(110,56,90,28)
+    $btnLocked.Add_Click({ $script:Search=''; Set-GridData (Invoke-Locked) })
 
     $btnAnalyze = New-Object Windows.Forms.Button
-    $btnAnalyze.Text='Analyze'; $btnAnalyze.SetBounds(210,45,90,28)
-    $btnAnalyze.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-Output (Invoke-Analyze) })
+    $btnAnalyze.Text='Analyze'; $btnAnalyze.SetBounds(210,56,90,28)
+    $btnAnalyze.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-Log (Invoke-Analyze) })
 
     $btnCloud = New-Object Windows.Forms.Button
-    $btnCloud.Text='Cloud'; $btnCloud.SetBounds(310,45,90,28)
-    $btnCloud.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-Output (Get-CloudEvidence -User $identity.Text) })
+    $btnCloud.Text='Cloud'; $btnCloud.SetBounds(310,56,90,28)
+    $btnCloud.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-GridData (Get-CloudEvidence -User $identity.Text) })
 
     $btnPreview = New-Object Windows.Forms.Button
-    $btnPreview.Text='Unlock Preview'; $btnPreview.SetBounds(410,45,110,28)
-    $btnPreview.Add_Click({ $script:Users=$users.Text.Split(','); Set-Output (Invoke-Unlock -Commit:$false) })
+    $btnPreview.Text='Unlock Preview'; $btnPreview.SetBounds(410,56,110,28)
+    $btnPreview.Add_Click({ $script:Users=$users.Text.Split(','); Set-Log (Invoke-Unlock -Commit:$false) })
 
     $btnCommit = New-Object Windows.Forms.Button
-    $btnCommit.Text='Unlock Commit'; $btnCommit.SetBounds(530,45,110,28)
-    $btnCommit.Add_Click({ $script:Users=$users.Text.Split(','); Set-Output (Invoke-Unlock -Commit:$true) })
+    $btnCommit.Text='Unlock Commit'; $btnCommit.SetBounds(530,56,110,28)
+    $btnCommit.Add_Click({ $script:Users=$users.Text.Split(','); Set-Log (Invoke-Unlock -Commit:$true) })
 
-    $form.Controls.AddRange(@($identity,$users,$hours,$output,$btnDiscover,$btnLocked,$btnAnalyze,$btnCloud,$btnPreview,$btnCommit))
+    $form.Controls.AddRange(@($lblIdentity,$identity,$lblUsers,$users,$lblHours,$hours,$grid,$log,$btnDiscover,$btnLocked,$btnAnalyze,$btnCloud,$btnPreview,$btnCommit))
     [void]$form.ShowDialog()
 }
 

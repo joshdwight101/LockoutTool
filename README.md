@@ -12,6 +12,7 @@ Both are designed as investigation consoles (not just unlock helpers) with:
 - Bulk unlock preview + commit
 - Hybrid identity evidence path (on-prem + Microsoft 365/Entra sign-ins)
 - Exportable investigation report
+- Right-click context menu on user rows (Analyze / Unlock Preview / Unlock Commit / Copy)
 
 ## PowerShell + C# Hybrid Tool
 
