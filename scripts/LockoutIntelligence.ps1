@@ -16,6 +16,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if (-not ([System.Management.Automation.PSTypeName]'LockoutSignal').Type) {
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -61,6 +62,7 @@ public static class LockoutInferenceEngine
     }
 }
 "@
+}
 
 
 function Ensure-ADModule {
