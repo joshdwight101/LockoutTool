@@ -187,8 +187,8 @@ function Invoke-InvestigateUser {
 }
 
 function Invoke-Unlock {
-    Ensure-ADModule
     param([bool]$Commit)
+    Ensure-ADModule
     if (-not $Users -or $Users.Count -eq 0) { throw "-Users is required." }
 
     $accounts = $Users | ForEach-Object { Get-ADUser -Identity $_ -ErrorAction Stop }
