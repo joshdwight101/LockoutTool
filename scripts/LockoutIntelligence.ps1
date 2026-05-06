@@ -217,28 +217,72 @@ function Show-LockoutGui {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'Lockout Intelligence - PowerShell GUI | Author: Joshua Dwight (@joshdwight101)'
+    $form.Text = 'Lockout Intelligence v1.0 - by Joshua Dwight'
     $form.Width = 1280; $form.Height = 820
+
+    $menu = New-Object Windows.Forms.MenuStrip
+    $fileMenu = New-Object Windows.Forms.ToolStripMenuItem('File')
+    $fileExit = New-Object Windows.Forms.ToolStripMenuItem('Exit')
+    $fileExit.Add_Click({ $form.Close() })
+    [void]$fileMenu.DropDownItems.Add($fileExit)
+
+    $helpMenu = New-Object Windows.Forms.ToolStripMenuItem('Help')
+    $helpContents = New-Object Windows.Forms.ToolStripMenuItem('How to Use')
+    $helpContents.Add_Click({
+        $helpText = @'
+Lockout Intelligence - Quick Help
+
+Top Filters:
+- Search User: real-time filter across username, display name, first and last name.
+- Show Locked / Show Disabled: controls which AD sets are loaded into the grid.
+- Diagnostic Lookback Hours: controls event log lookback window for diagnostics.
+
+Actions:
+- Refresh Accounts: rebuild cache and reload list.
+- Analyze Selected: runs root-cause diagnostics on selected row.
+- Unlock Checked (Preview): simulation only via -WhatIf (no changes).
+- Unlock Checked (Commit): performs real unlock action.
+- Cloud Sign-ins for Selected: opens Entra/M365 sign-in evidence popup.
+
+Tips:
+- Right-click a row for diagnostics/unlock shortcuts.
+- Check multiple rows in Select column for bulk unlock actions.
+'@
+        [Windows.Forms.MessageBox]::Show($helpText, 'Lockout Intelligence Help') | Out-Null
+    })
+
+    $helpAbout = New-Object Windows.Forms.ToolStripMenuItem('About')
+    $helpAbout.Add_Click({
+        $about = "Lockout Intelligence v1.0`nAuthor: Joshua Dwight`nGitHub: https://github.com/joshdwight101"
+        [Windows.Forms.MessageBox]::Show($about, 'About Lockout Intelligence') | Out-Null
+    })
+
+    [void]$helpMenu.DropDownItems.Add($helpContents)
+    [void]$helpMenu.DropDownItems.Add($helpAbout)
+    [void]$menu.Items.Add($fileMenu)
+    [void]$menu.Items.Add($helpMenu)
+    $form.MainMenuStrip = $menu
+    $form.Controls.Add($menu)
 
     $lblSearch = New-Object Windows.Forms.Label
     $lblSearch.Text = 'Search User (real-time filter):'
-    $lblSearch.SetBounds(10,8,220,20)
+    $lblSearch.SetBounds(10,32,220,20)
     $txtSearch = New-Object Windows.Forms.TextBox
-    $txtSearch.SetBounds(10,28,260,25)
+    $txtSearch.SetBounds(10,52,260,25)
 
     $chkLocked = New-Object Windows.Forms.CheckBox
-    $chkLocked.Text='Show Locked'; $chkLocked.Checked=$true; $chkLocked.SetBounds(280,30,110,24)
+    $chkLocked.Text='Show Locked'; $chkLocked.Checked=$true; $chkLocked.SetBounds(280,54,110,24)
     $chkDisabled = New-Object Windows.Forms.CheckBox
-    $chkDisabled.Text='Show Disabled'; $chkDisabled.Checked=$true; $chkDisabled.SetBounds(395,30,120,24)
+    $chkDisabled.Text='Show Disabled'; $chkDisabled.Checked=$true; $chkDisabled.SetBounds(395,54,120,24)
 
     $lblHours = New-Object Windows.Forms.Label
     $lblHours.Text='Diagnostic Lookback Hours:'
-    $lblHours.SetBounds(530,8,180,20)
+    $lblHours.SetBounds(530,32,180,20)
     $hours = New-Object Windows.Forms.NumericUpDown
-    $hours.SetBounds(530,28,90,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
+    $hours.SetBounds(530,52,90,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
 
     $grid = New-Object Windows.Forms.DataGridView
-    $grid.SetBounds(10,95,1240,530)
+    $grid.SetBounds(10,120,1240,505)
     $grid.ReadOnly = $false
     $grid.AllowUserToAddRows = $false
     $grid.AllowUserToDeleteRows = $false
@@ -271,8 +315,15 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
     $script:LastCacheUtc = $null
 
     function Rebuild-UserCache {
-        Ensure-ADModule
         $combined = @()
+        if (-not $chkLocked.Checked -and -not $chkDisabled.Checked) {
+            $script:UserCache = @()
+            $script:LastCacheUtc = [DateTime]::UtcNow
+            Write-Log 'No filters selected; cache reset to empty.'
+            return
+        }
+
+        Ensure-ADModule
 
         if ($chkLocked.Checked) {
             foreach ($dc in (Get-ADDomainController -Filter *)) {
@@ -291,7 +342,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
                 Get-ADUser -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt
         }
 
-        $script:UserCache = $combined | Sort-Object SamAccountName -Unique
+        $script:UserCache = @($combined | Sort-Object SamAccountName -Unique)
         $script:LastCacheUtc = [DateTime]::UtcNow
         Write-Log "Cache rebuilt with $($script:UserCache.Count) unique users."
     }
@@ -373,23 +424,23 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
     $grid.ContextMenuStrip = $context
 
     $btnRefresh = New-Object Windows.Forms.Button
-    $btnRefresh.Text='Refresh Accounts'; $btnRefresh.SetBounds(10,60,140,28)
+    $btnRefresh.Text='Refresh Accounts'; $btnRefresh.SetBounds(10,86,140,28)
     $btnRefresh.Add_Click({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
 
     $btnAnalyze = New-Object Windows.Forms.Button
-    $btnAnalyze.Text='Analyze Selected'; $btnAnalyze.SetBounds(160,60,130,28)
+    $btnAnalyze.Text='Analyze Selected'; $btnAnalyze.SetBounds(160,86,130,28)
     $btnAnalyze.Add_Click({ Invoke-SafeUiAction { Analyze-SelectedUser } })
 
     $btnUnlockPreview = New-Object Windows.Forms.Button
-    $btnUnlockPreview.Text='Unlock Checked (Preview)'; $btnUnlockPreview.SetBounds(300,60,170,28)
+    $btnUnlockPreview.Text='Unlock Checked (Preview)'; $btnUnlockPreview.SetBounds(300,86,170,28)
     $btnUnlockPreview.Add_Click({ Invoke-SafeUiAction { Unlock-Checked -Commit:$false } })
 
     $btnUnlockCommit = New-Object Windows.Forms.Button
-    $btnUnlockCommit.Text='Unlock Checked (Commit)'; $btnUnlockCommit.SetBounds(480,60,170,28)
+    $btnUnlockCommit.Text='Unlock Checked (Commit)'; $btnUnlockCommit.SetBounds(480,86,170,28)
     $btnUnlockCommit.Add_Click({ Invoke-SafeUiAction { Unlock-Checked -Commit:$true } })
 
     $btnCloud = New-Object Windows.Forms.Button
-    $btnCloud.Text='Cloud Sign-ins for Selected'; $btnCloud.SetBounds(660,60,180,28)
+    $btnCloud.Text='Cloud Sign-ins for Selected'; $btnCloud.SetBounds(660,86,180,28)
     $btnCloud.Add_Click({ Invoke-SafeUiAction {
         if ($grid.SelectedRows.Count -eq 0) { return }
         $id = [string]$grid.SelectedRows[0].Cells['UserPrincipalName'].Value
