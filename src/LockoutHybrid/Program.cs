@@ -1,5 +1,3 @@
-using System.DirectoryServices.ActiveDirectory;
-using System.Diagnostics.Eventing.Reader;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Text;
@@ -8,12 +6,10 @@ namespace LockoutHybrid;
 
 internal static class Program
 {
-    private static readonly int[] InterestingEventIds = [4740, 4771, 4776, 4625, 4767];
-
     private static int Main(string[] args)
     {
-        var parser = HybridCommand.Parse(args);
-        if (parser.ShowHelp)
+        var cmd = HybridCommand.Parse(args);
+        if (cmd.ShowHelp)
         {
             HybridCommand.PrintHelp();
             return 0;
@@ -23,188 +19,157 @@ internal static class Program
         runspace.Open();
         EnsureAdModule(runspace);
 
-        return parser.Mode switch
+        return cmd.Mode switch
         {
-            HybridMode.Discover => DiscoverDomainControllers(runspace),
-            HybridMode.LockedUsers => ListLockedUsers(runspace, parser.Search),
-            HybridMode.Analyze => AnalyzeUser(runspace, parser.Identity),
-            HybridMode.UnlockPreview => UnlockUsers(runspace, parser.Users, commit: false),
-            HybridMode.UnlockCommit => UnlockUsers(runspace, parser.Users, commit: true),
+            "discover" => Discover(runspace),
+            "locked" => Locked(runspace, cmd.Search),
+            "analyze" => Analyze(runspace, cmd.Identity, cmd.Hours),
+            "connect-cloud" => ConnectCloud(runspace),
+            "cloud-signins" => CloudSignins(runspace, cmd.Identity, cmd.Hours),
+            "investigate" => Investigate(runspace, cmd.Identity, cmd.Hours),
+            "unlock-preview" => Unlock(runspace, cmd.Users, false),
+            "unlock-commit" => Unlock(runspace, cmd.Users, true),
+            "export" => Export(runspace, cmd.Identity, cmd.Hours, cmd.Output),
             _ => 1
         };
     }
 
-    private static void EnsureAdModule(Runspace runspace)
+    static void EnsureAdModule(Runspace rs)
     {
-        using var ps = PowerShell.Create();
-        ps.Runspace = runspace;
-        ps.AddCommand("Import-Module").AddArgument("ActiveDirectory");
-        ps.Invoke();
-        if (ps.HadErrors) throw new InvalidOperationException("ActiveDirectory module is required.");
+        using var ps = PowerShell.Create(); ps.Runspace = rs;
+        ps.AddScript("Import-Module ActiveDirectory -ErrorAction Stop"); ps.Invoke();
+        if (ps.HadErrors) throw new InvalidOperationException("ActiveDirectory module required.");
     }
 
-    private static int DiscoverDomainControllers(Runspace runspace)
+    static int Discover(Runspace rs) => InvokeAndPrint(rs, "Get-ADDomainController -Filter * | select HostName,Site,IsReadOnly,IsGlobalCatalog,IPv4Address");
+    static int Locked(Runspace rs, string? search)
     {
-        var domain = Domain.GetCurrentDomain();
-        Console.WriteLine($"Domain: {domain.Name}");
-        using var ps = PowerShell.Create();
-        ps.Runspace = runspace;
-        ps.AddScript("Get-ADDomainController -Filter * | Select-Object HostName,Site,IsReadOnly,IsGlobalCatalog,IPv4Address");
-        PrintPsObjects(ps.Invoke());
-        return ps.HadErrors ? 1 : 0;
+        var script = "Search-ADAccount -LockedOut -UsersOnly | Get-ADUser -Properties LockedOut,BadLogonCount,LastBadPasswordAttempt,LastLogonDate | select SamAccountName,UserPrincipalName,LockedOut,BadLogonCount,LastBadPasswordAttempt,LastLogonDate";
+        return InvokeAndPrint(rs, script, o => string.IsNullOrWhiteSpace(search) || (o.Properties["SamAccountName"].Value?.ToString() ?? "").Contains(search, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static int ListLockedUsers(Runspace runspace, string? search)
+    static int Analyze(Runspace rs, string? identity, int hours)
     {
-        using var ps = PowerShell.Create();
-        ps.Runspace = runspace;
-        ps.AddScript(@"
-            Search-ADAccount -LockedOut -UsersOnly |
-            Select-Object SamAccountName, UserPrincipalName, LastBadPasswordAttempt, LockedOut, DistinguishedName
-        ");
-        var rows = ps.Invoke();
-        foreach (var row in rows)
-        {
-            var sam = row.Properties["SamAccountName"].Value?.ToString() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(search) && !sam.Contains(search, StringComparison.OrdinalIgnoreCase)) continue;
-            PrintRow(row);
-        }
-
-        return ps.HadErrors ? 1 : 0;
-    }
-
-    private static int AnalyzeUser(Runspace runspace, string? identity)
-    {
-        if (string.IsNullOrWhiteSpace(identity))
-        {
-            Console.WriteLine("--identity is required for analyze mode.");
-            return 1;
-        }
-
-        var events = QuerySecurityEvents(identity, TimeSpan.FromHours(8));
-        var narrative = BuildNarrative(identity, events);
-        Console.WriteLine(narrative);
+        if (string.IsNullOrWhiteSpace(identity)) return Fail("--identity required");
+        var events = GetOnPremEvents(rs, identity, hours);
+        Console.WriteLine(BuildNarrative(identity, events));
         return 0;
     }
 
-    private static int UnlockUsers(Runspace runspace, IReadOnlyList<string> users, bool commit)
-    {
-        if (users.Count == 0)
-        {
-            Console.WriteLine("Provide users with --users user1,user2");
-            return 1;
-        }
+    static int ConnectCloud(Runspace rs)
+        => InvokeAndPrint(rs, "Import-Module Microsoft.Graph.Authentication -ErrorAction Stop; Import-Module Microsoft.Graph.Reports -ErrorAction Stop; Connect-MgGraph -Scopes 'AuditLog.Read.All','Directory.Read.All' -NoWelcome");
 
-        using var ps = PowerShell.Create();
-        ps.Runspace = runspace;
-        var script = commit
-            ? "$u | ForEach-Object { Get-ADUser -Identity $_ } | Unlock-ADAccount -Confirm:$false"
-            : "$u | ForEach-Object { Get-ADUser -Identity $_ } | Unlock-ADAccount -WhatIf";
-        ps.AddScript("param([string[]]$u) " + script).AddParameter("u", users.ToArray());
-        ps.Invoke();
-        Console.WriteLine(commit ? "Unlock commit complete." : "Unlock preview complete (-WhatIf).");
-        return ps.HadErrors ? 1 : 0;
+    static int CloudSignins(Runspace rs, string? identity, int hours)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) return Fail("--identity required");
+        var start = DateTime.UtcNow.AddHours(-hours).ToString("o");
+        var script = $"$f=\"userPrincipalName eq '{identity}' and createdDateTime ge {start}\"; Get-MgAuditLogSignIn -Filter $f -Top 100 | select CreatedDateTime,UserPrincipalName,AppDisplayName,IPAddress,ClientAppUsed,Status";
+        return InvokeAndPrint(rs, script);
     }
 
-    private static List<LockoutEvent> QuerySecurityEvents(string identity, TimeSpan window)
+    static int Investigate(Runspace rs, string? identity, int hours)
     {
-        var start = DateTime.UtcNow.Subtract(window);
-        var query = "*[System[(EventID=4740 or EventID=4771 or EventID=4776 or EventID=4625 or EventID=4767)]]";
-        var reader = new EventLogReader(new EventLogQuery("Security", PathType.LogName, query) { ReverseDirection = true });
-        var output = new List<LockoutEvent>();
-
-        for (EventRecord? record = reader.ReadEvent(); record != null; record = reader.ReadEvent())
-        {
-            if (record.TimeCreated is null || record.TimeCreated.Value.ToUniversalTime() < start) break;
-            var xml = record.ToXml();
-            if (!xml.Contains(identity, StringComparison.OrdinalIgnoreCase)) continue;
-            output.Add(new LockoutEvent(record.Id, record.TimeCreated.Value, record.MachineName ?? "unknown", xml));
-            if (output.Count > 300) break;
-        }
-
-        return output;
+        if (string.IsNullOrWhiteSpace(identity)) return Fail("--identity required");
+        var events = GetOnPremEvents(rs, identity, hours);
+        Console.WriteLine(BuildNarrative(identity, events));
+        Console.WriteLine("\nCloud sign-ins:");
+        CloudSignins(rs, identity, hours);
+        return 0;
     }
 
-    private static string BuildNarrative(string identity, IReadOnlyList<LockoutEvent> events)
+    static int Unlock(Runspace rs, List<string> users, bool commit)
     {
+        if (users.Count == 0) return Fail("--users required");
+        var joined = string.Join("','", users);
+        var cmd = commit
+            ? $"@('{joined}') | % {{ Get-ADUser -Identity $_ }} | Unlock-ADAccount -Confirm:$false"
+            : $"@('{joined}') | % {{ Get-ADUser -Identity $_ }} | Unlock-ADAccount -WhatIf";
+        return InvokeAndPrint(rs, cmd);
+    }
+
+    static int Export(Runspace rs, string? identity, int hours, string output)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) return Fail("--identity required");
+        var events = GetOnPremEvents(rs, identity, hours);
+        var report = new { User = identity, GeneratedUtc = DateTime.UtcNow, Narrative = BuildNarrative(identity, events), OnPremEvents = events.Take(50).ToList() };
+        File.WriteAllText(output, System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"Report written: {output}");
+        return 0;
+    }
+
+    static List<Dictionary<string, string>> GetOnPremEvents(Runspace rs, string identity, int hours)
+    {
+        var script = $@"
+$ids=4740,4771,4776,4625,4767
+$start=(Get-Date).AddHours(-{hours})
+foreach($dc in Get-ADDomainController -Filter *) {{
+ foreach($id in $ids) {{
+  Get-WinEvent -ComputerName $dc.HostName -FilterHashtable @{{LogName='Security';Id=$id;StartTime=$start}} -ErrorAction SilentlyContinue |
+   ? {{ $_.Message -match [regex]::Escape('{identity}') }} |
+   select @{n='SourceDC';e={{$dc.HostName}}},TimeCreated,Id,MachineName,Message
+ }}
+}}
+";
+        using var ps = PowerShell.Create(); ps.Runspace = rs; ps.AddScript(script);
+        var rows = ps.Invoke();
+        return rows.Select(r => r.Properties.ToDictionary(p => p.Name, p => p.Value?.ToString() ?? "")).ToList();
+    }
+
+    static string BuildNarrative(string identity, List<Dictionary<string, string>> events)
+    {
+        var ids = events.Select(e => int.TryParse(e.GetValueOrDefault("Id"), out var v) ? v : 0).ToList();
         var sb = new StringBuilder();
         sb.AppendLine($"Lockout Intelligence Report for {identity}");
-        sb.AppendLine($"Evidence events: {events.Count}");
-
-        var byId = events.GroupBy(x => x.EventId).ToDictionary(g => g.Key, g => g.Count());
-        foreach (var id in InterestingEventIds)
-        {
-            sb.AppendLine($"  Event {id}: {(byId.TryGetValue(id, out var count) ? count : 0)}");
-        }
-
-        var likely = "No high-confidence cause detected.";
-        if (events.Any(x => x.EventId == 4771 && x.RawXml.Contains("0x18", StringComparison.OrdinalIgnoreCase)))
-            likely = "Likely Kerberos bad-password retry source (4771 with failure code 0x18).";
-        else if (events.Any(x => x.EventId == 4776))
-            likely = "Likely NTLM credential validation retries (4776 evidence found).";
-        else if (events.Any(x => x.EventId == 4625))
-            likely = "Likely endpoint/service/process logon failure pattern (4625 evidence found).";
-
-        sb.AppendLine($"Probable cause: {likely}");
-        sb.AppendLine("Recent timeline:");
-        foreach (var e in events.OrderByDescending(x => x.TimeCreated).Take(20))
-            sb.AppendLine($"  {e.TimeCreated:u} | {e.Machine} | EventID={e.EventId}");
-
+        sb.AppendLine($"4740={ids.Count(i=>i==4740)}, 4771={ids.Count(i=>i==4771)}, 4776={ids.Count(i=>i==4776)}, 4625={ids.Count(i=>i==4625)}, 4767={ids.Count(i=>i==4767)}");
+        sb.AppendLine(ids.Contains(4771) && events.Any(e=>e.GetValueOrDefault("Message").Contains("0x18",StringComparison.OrdinalIgnoreCase))
+            ? "Likely cause: Kerberos bad-password retry pattern."
+            : ids.Contains(4776) ? "Likely cause: NTLM retry pattern." : ids.Contains(4625) ? "Likely cause: endpoint/service credential issue." : "Likely cause: undetermined.");
         return sb.ToString();
     }
 
-    private static void PrintPsObjects(System.Collections.ObjectModel.Collection<PSObject> results)
+    static int InvokeAndPrint(Runspace rs, string script, Func<PSObject, bool>? filter = null)
     {
-        foreach (var r in results) PrintRow(r);
+        using var ps = PowerShell.Create(); ps.Runspace = rs; ps.AddScript(script);
+        var rows = ps.Invoke();
+        foreach (var r in rows.Where(x => filter?.Invoke(x) ?? true))
+            Console.WriteLine(string.Join(" | ", r.Properties.Where(p => p.Value is not null).Select(p => $"{p.Name}={p.Value}")));
+        return ps.HadErrors ? 1 : 0;
     }
 
-    private static void PrintRow(PSObject row)
-    {
-        Console.WriteLine(string.Join(" | ", row.Properties.Where(p => p.Value is not null).Select(p => $"{p.Name}={p.Value}")));
-    }
-
-    private sealed record LockoutEvent(int EventId, DateTime TimeCreated, string Machine, string RawXml);
+    static int Fail(string m) { Console.WriteLine(m); return 1; }
 }
 
-internal enum HybridMode { Discover, LockedUsers, Analyze, UnlockPreview, UnlockCommit }
-
-internal sealed record HybridCommand
+internal sealed class HybridCommand
 {
-    public HybridMode Mode { get; init; } = HybridMode.LockedUsers;
-    public string? Search { get; init; }
-    public string? Identity { get; init; }
-    public List<string> Users { get; init; } = [];
-    public bool ShowHelp { get; init; }
+    public string Mode { get; set; } = "investigate";
+    public string? Identity { get; set; }
+    public string? Search { get; set; }
+    public int Hours { get; set; } = 8;
+    public string Output { get; set; } = "lockout-report.json";
+    public List<string> Users { get; } = [];
+    public bool ShowHelp { get; set; }
 
     public static HybridCommand Parse(string[] args)
     {
-        var cmd = new HybridCommand();
-        for (var i = 0; i < args.Length; i++)
+        var c = new HybridCommand();
+        for (int i=0;i<args.Length;i++)
         {
-            switch (args[i].ToLowerInvariant())
+            switch(args[i].ToLowerInvariant())
             {
-                case "discover": cmd.Mode = HybridMode.Discover; break;
-                case "locked": cmd.Mode = HybridMode.LockedUsers; break;
-                case "analyze": cmd.Mode = HybridMode.Analyze; break;
-                case "unlock-preview": cmd.Mode = HybridMode.UnlockPreview; break;
-                case "unlock-commit": cmd.Mode = HybridMode.UnlockCommit; break;
-                case "--search": cmd = cmd with { Search = args[++i] }; break;
-                case "--identity": cmd = cmd with { Identity = args[++i] }; break;
-                case "--users": cmd.Users.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)); break;
-                case "-h":
-                case "--help": return cmd with { ShowHelp = true };
+                case "discover": case "locked": case "analyze": case "connect-cloud": case "cloud-signins": case "investigate": case "unlock-preview": case "unlock-commit": case "export": c.Mode=args[i].ToLowerInvariant(); break;
+                case "--identity": c.Identity=args[++i]; break;
+                case "--search": c.Search=args[++i]; break;
+                case "--hours": c.Hours=int.Parse(args[++i]); break;
+                case "--users": c.Users.AddRange(args[++i].Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)); break;
+                case "--output": c.Output=args[++i]; break;
+                case "-h": case "--help": c.ShowHelp=true; break;
             }
         }
-        return cmd;
+        return c;
     }
 
     public static void PrintHelp()
     {
-        Console.WriteLine("LockoutHybrid Intelligence");
-        Console.WriteLine("  discover");
-        Console.WriteLine("  locked [--search bob]");
-        Console.WriteLine("  analyze --identity bob");
-        Console.WriteLine("  unlock-preview --users bob,alice");
-        Console.WriteLine("  unlock-commit --users bob,alice");
+        Console.WriteLine("Modes: discover | locked | analyze | connect-cloud | cloud-signins | investigate | unlock-preview | unlock-commit | export");
     }
 }

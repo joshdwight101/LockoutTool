@@ -1,52 +1,83 @@
-# LockoutTool
+# LockoutTool - Hybrid Lockout Intelligence Console
 
-A single **Lockout Intelligence** application delivered in two implementations with matching capabilities:
+This repository provides exactly two apps for the same Lockout Intelligence platform:
 
-1. **Hybrid PowerShell + C# tool** (PowerShell-first app with embedded C# inference engine): `scripts/LockoutIntelligence.ps1`
-2. **Pure C# tool** (managed-only implementation): `src/LockoutPureCSharp`
+1. **PowerShell app (with embedded C# intelligence):** `scripts/LockoutIntelligence.ps1`
+2. **C# app:** `src/LockoutHybrid`
 
-Both variants support:
-- Domain controller discovery
-- Locked-account search + filter
-- Root-cause lockout intelligence from Security logs (4740/4771/4776/4625/4767)
-- Bulk unlock preview and bulk unlock commit
+Both are designed as investigation consoles (not just unlock helpers) with:
+- Multi-DC discovery
+- Locked account search/filter
+- Event-correlation intelligence (4740/4771/4776/4625/4767)
+- Bulk unlock preview + commit
+- Hybrid identity evidence path (on-prem + Microsoft 365/Entra sign-ins)
+- Exportable investigation report
 
-## PowerShell + C# Hybrid tool
+## PowerShell + C# Hybrid Tool
 
-The script is a complete operations tool and compiles embedded C# (`Add-Type`) for inference logic.
+### Modes
+- `Discover`
+- `Locked`
+- `Analyze`
+- `InvestigateUser`
+- `ConnectCloud`
+- `CloudSignins`
+- `UnlockPreview`
+- `UnlockCommit`
+- `ExportReport`
 
+### Examples
 ```powershell
-# Discover domain controllers
+# discover domain controllers
 ./scripts/LockoutIntelligence.ps1 -Mode Discover
 
-# Search locked users (filter by partial account)
-./scripts/LockoutIntelligence.ps1 -Mode Locked -Search ali
+# list locked users with filter
+./scripts/LockoutIntelligence.ps1 -Mode Locked -Search alice
 
-# Analyze one user with root-cause narrative + timeline
+# analyze on-prem lockout evidence for one user
 ./scripts/LockoutIntelligence.ps1 -Mode Analyze -Identity alice
 
-# Bulk unlock preview
-./scripts/LockoutIntelligence.ps1 -Mode UnlockPreview -Users alice,bob
+# connect graph once per session
+./scripts/LockoutIntelligence.ps1 -Mode ConnectCloud
 
-# Bulk unlock commit
+# full dual-evidence investigation (on-prem + cloud)
+./scripts/LockoutIntelligence.ps1 -Mode InvestigateUser -Identity alice@contoso.com -Hours 12
+
+# export investigation package to JSON
+./scripts/LockoutIntelligence.ps1 -Mode ExportReport -Identity alice@contoso.com -OutputPath .\alice-lockout-report.json
+
+# bulk unlock safety preview first, then commit
+./scripts/LockoutIntelligence.ps1 -Mode UnlockPreview -Users alice,bob
 ./scripts/LockoutIntelligence.ps1 -Mode UnlockCommit -Users alice,bob
 ```
 
-## Pure C# tool
+## C# app variant
 
 ```bash
-dotnet run --project src/LockoutPureCSharp -- list-dcs
-dotnet run --project src/LockoutPureCSharp -- search-locked
-dotnet run --project src/LockoutPureCSharp -- events alice
-dotnet run --project src/LockoutPureCSharp -- unlock user1 user2
+dotnet run --project src/LockoutHybrid -- discover
+dotnet run --project src/LockoutHybrid -- locked --search alice
+dotnet run --project src/LockoutHybrid -- analyze --identity alice
 ```
 
-## Optional C# host for AD PowerShell runspace
+## Required prerequisites
 
-A C# host for in-process PowerShell (`src/LockoutHybrid`) is included for teams that want the same workflows from a .NET executable and can be extended to a desktop UI shell.
+### On-prem AD
+- Windows host joined to domain.
+- RSAT Active Directory module installed.
+- Security log access to relevant domain controllers.
+- Firewall/RPC rules for remote event log queries.
 
-## Runtime notes
+### Cloud / Microsoft 365
+- Microsoft Graph PowerShell modules:
+  - `Microsoft.Graph.Authentication`
+  - `Microsoft.Graph.Reports`
+- Graph delegated permissions at minimum:
+  - `AuditLog.Read.All`
+  - `Directory.Read.All`
 
-- Windows domain environment required.
-- ActiveDirectory module required for hybrid PowerShell operations.
-- Appropriate rights and event-log RPC/firewall access are required for remote DC evidence collection.
+## Troubleshooting common errors
+
+- **`Import-Module ActiveDirectory` fails**: install RSAT AD tools and run in elevated PowerShell.
+- **Remote event log access errors**: verify DC firewall rules for Remote Event Log Management and RPC.
+- **`Get-MgAuditLogSignIn` permission errors**: consent required Graph scopes and reconnect via `ConnectCloud` mode.
+- **No cloud results**: use UPN format for `-Identity` (for example `alice@contoso.com`).
