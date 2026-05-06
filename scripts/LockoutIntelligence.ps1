@@ -214,114 +214,138 @@ function Show-LockoutGui {
 
     $form = New-Object Windows.Forms.Form
     $form.Text = 'Lockout Intelligence - PowerShell GUI'
-    $form.Width = 1200; $form.Height = 760
+    $form.Width = 1280; $form.Height = 820
 
-    $lblIdentity = New-Object Windows.Forms.Label
-    $lblIdentity.Text = 'Identity (sAMAccountName or UPN)'
-    $lblIdentity.SetBounds(10,8,240,18)
+    $lblSearch = New-Object Windows.Forms.Label
+    $lblSearch.Text = 'Search User (real-time filter):'
+    $lblSearch.SetBounds(10,8,220,20)
+    $txtSearch = New-Object Windows.Forms.TextBox
+    $txtSearch.SetBounds(10,28,260,25)
 
-    $identity = New-Object Windows.Forms.TextBox
-    $identity.SetBounds(10,26,300,25)
-
-    $lblUsers = New-Object Windows.Forms.Label
-    $lblUsers.Text = 'Bulk Unlock Users (comma separated)'
-    $lblUsers.SetBounds(320,8,240,18)
-
-    $users = New-Object Windows.Forms.TextBox
-    $users.SetBounds(320,26,220,25)
+    $chkLocked = New-Object Windows.Forms.CheckBox
+    $chkLocked.Text='Show Locked'; $chkLocked.Checked=$true; $chkLocked.SetBounds(280,30,110,24)
+    $chkDisabled = New-Object Windows.Forms.CheckBox
+    $chkDisabled.Text='Show Disabled'; $chkDisabled.Checked=$true; $chkDisabled.SetBounds(395,30,120,24)
 
     $lblHours = New-Object Windows.Forms.Label
-    $lblHours.Text = 'Lookback Hours'
-    $lblHours.SetBounds(550,8,120,18)
-
+    $lblHours.Text='Diagnostic Lookback Hours:'
+    $lblHours.SetBounds(530,8,180,20)
     $hours = New-Object Windows.Forms.NumericUpDown
-    $hours.SetBounds(550,26,90,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
+    $hours.SetBounds(530,28,90,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
 
     $grid = New-Object Windows.Forms.DataGridView
-    $grid.SetBounds(10,90,1160,500)
-    $grid.ReadOnly = $true
+    $grid.SetBounds(10,95,1240,530)
+    $grid.ReadOnly = $false
     $grid.AllowUserToAddRows = $false
     $grid.AllowUserToDeleteRows = $false
     $grid.SelectionMode = 'FullRowSelect'
     $grid.MultiSelect = $false
+    $grid.AutoSizeColumnsMode = 'Fill'
 
     $log = New-Object Windows.Forms.TextBox
-    $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,600,1160,110)
+    $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,635,1240,140)
 
-    function Set-GridData($data) {
-        if (-not $data) { $grid.DataSource = $null; return }
-        if ($data -is [string]) { $log.Text = $data; return }
-        $grid.DataSource = @($data)
+    function Write-Log([string]$t){ $log.Text = "$(Get-Date -Format T) - $t`r`n" + $log.Text }
+
+    function Load-UserGrid {
+        Ensure-ADModule
+        $items = @()
+        if ($chkLocked.Checked) {
+            $items += Search-ADAccount -LockedOut -UsersOnly | Get-ADUser -Properties Enabled,LockedOut,LastBadPasswordAttempt,BadLogonCount
+        }
+        if ($chkDisabled.Checked) {
+            $items += Search-ADAccount -AccountDisabled -UsersOnly | Get-ADUser -Properties Enabled,LockedOut,LastBadPasswordAttempt,BadLogonCount
+        }
+
+        $items = $items | Sort-Object SamAccountName -Unique
+        if ($txtSearch.Text) {
+            $q = [regex]::Escape($txtSearch.Text)
+            $items = $items | Where-Object { $_.SamAccountName -match $q -or $_.UserPrincipalName -match $q -or $_.DisplayName -match $q }
+        }
+
+        $rows = foreach ($u in $items) {
+            [pscustomobject]@{
+                Select = $false
+                SamAccountName = $u.SamAccountName
+                DisplayName = $u.DisplayName
+                UserPrincipalName = $u.UserPrincipalName
+                Enabled = $u.Enabled
+                LockedOut = $u.LockedOut
+                BadLogonCount = $u.BadLogonCount
+                LastBadPasswordAttempt = $u.LastBadPasswordAttempt
+            }
+        }
+
+        $grid.DataSource = @($rows)
+        if ($grid.Columns['Select']) { $grid.Columns['Select'].ReadOnly = $false }
+        Write-Log "Loaded $(@($rows).Count) accounts into grid."
     }
 
-    function Set-Log($txt) {
-        $log.Text = ($txt | Out-String)
+    function Analyze-SelectedUser {
+        if ($grid.SelectedRows.Count -eq 0) { return }
+        $name = [string]$grid.SelectedRows[0].Cells['SamAccountName'].Value
+        if (-not $name) { return }
+        $script:Identity = $name; $script:Hours = [int]$hours.Value
+        $result = Invoke-Analyze | Out-String
+        Write-Log "Diagnostics complete for $name"
+        [Windows.Forms.MessageBox]::Show($result, "Root Cause Diagnostics - $name") | Out-Null
     }
+
+    function Unlock-Checked([bool]$Commit) {
+        $selected = @()
+        foreach ($r in $grid.Rows) {
+            if ($r.Cells['Select'].Value -eq $true) { $selected += [string]$r.Cells['SamAccountName'].Value }
+        }
+        if ($selected.Count -eq 0) { Write-Log 'No checked users selected.'; return }
+        $script:Users = $selected
+        $res = Invoke-Unlock -Commit:$Commit | Out-String
+        Write-Log $res
+        Load-UserGrid
+    }
+
+    $txtSearch.Add_TextChanged({ Load-UserGrid })
+    $chkLocked.Add_CheckedChanged({ Load-UserGrid })
+    $chkDisabled.Add_CheckedChanged({ Load-UserGrid })
 
     $context = New-Object Windows.Forms.ContextMenuStrip
-    $miAnalyze = $context.Items.Add('Analyze Selected User')
-    $miPreview = $context.Items.Add('Unlock Preview Selected User')
-    $miCommit = $context.Items.Add('Unlock Commit Selected User')
-    $miCopy = $context.Items.Add('Copy Selected Cell')
-
-    $miAnalyze.add_Click({
-        if ($grid.SelectedRows.Count -eq 0) { return }
-        $row = $grid.SelectedRows[0]
-        $name = [string]$row.Cells['SamAccountName'].Value
-        if (-not $name) { $name = [string]$row.Cells[0].Value }
-        $script:Identity = $name; $identity.Text = $name; $script:Hours = [int]$hours.Value
-        Set-Log (Invoke-Analyze)
-    })
-
-    $miPreview.add_Click({
-        if ($grid.SelectedRows.Count -eq 0) { return }
-        $row = $grid.SelectedRows[0]
-        $name = [string]$row.Cells['SamAccountName'].Value
-        if (-not $name) { $name = [string]$row.Cells[0].Value }
-        $script:Users = @($name)
-        Set-Log (Invoke-Unlock -Commit:$false)
-    })
-
-    $miCommit.add_Click({
-        if ($grid.SelectedRows.Count -eq 0) { return }
-        $row = $grid.SelectedRows[0]
-        $name = [string]$row.Cells['SamAccountName'].Value
-        if (-not $name) { $name = [string]$row.Cells[0].Value }
-        $script:Users = @($name)
-        Set-Log (Invoke-Unlock -Commit:$true)
-    })
-
-    $miCopy.add_Click({
-        if ($grid.SelectedCells.Count -gt 0) { [Windows.Forms.Clipboard]::SetText([string]$grid.SelectedCells[0].Value) }
-    })
-
+    $context.Items.Add('Run Root Cause Diagnostics').add_Click({ Analyze-SelectedUser }) | Out-Null
+    $context.Items.Add('Unlock Selected User (Preview)').add_Click({
+        if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$false)|Out-String) }
+    }) | Out-Null
+    $context.Items.Add('Unlock Selected User (Commit)').add_Click({
+        if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$true)|Out-String); Load-UserGrid }
+    }) | Out-Null
     $grid.ContextMenuStrip = $context
 
-    $btnDiscover = New-Object Windows.Forms.Button
-    $btnDiscover.Text='Discover'; $btnDiscover.SetBounds(10,56,90,28)
-    $btnDiscover.Add_Click({ Set-GridData (Invoke-Discover) })
-
-    $btnLocked = New-Object Windows.Forms.Button
-    $btnLocked.Text='Locked'; $btnLocked.SetBounds(110,56,90,28)
-    $btnLocked.Add_Click({ $script:Search=''; Set-GridData (Invoke-Locked) })
+    $btnRefresh = New-Object Windows.Forms.Button
+    $btnRefresh.Text='Refresh Accounts'; $btnRefresh.SetBounds(10,60,140,28)
+    $btnRefresh.Add_Click({ Load-UserGrid })
 
     $btnAnalyze = New-Object Windows.Forms.Button
-    $btnAnalyze.Text='Analyze'; $btnAnalyze.SetBounds(210,56,90,28)
-    $btnAnalyze.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-Log (Invoke-Analyze) })
+    $btnAnalyze.Text='Analyze Selected'; $btnAnalyze.SetBounds(160,60,130,28)
+    $btnAnalyze.Add_Click({ Analyze-SelectedUser })
+
+    $btnUnlockPreview = New-Object Windows.Forms.Button
+    $btnUnlockPreview.Text='Unlock Checked (Preview)'; $btnUnlockPreview.SetBounds(300,60,170,28)
+    $btnUnlockPreview.Add_Click({ Unlock-Checked -Commit:$false })
+
+    $btnUnlockCommit = New-Object Windows.Forms.Button
+    $btnUnlockCommit.Text='Unlock Checked (Commit)'; $btnUnlockCommit.SetBounds(480,60,170,28)
+    $btnUnlockCommit.Add_Click({ Unlock-Checked -Commit:$true })
 
     $btnCloud = New-Object Windows.Forms.Button
-    $btnCloud.Text='Cloud'; $btnCloud.SetBounds(310,56,90,28)
-    $btnCloud.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-GridData (Get-CloudEvidence -User $identity.Text) })
+    $btnCloud.Text='Cloud Sign-ins for Selected'; $btnCloud.SetBounds(660,60,180,28)
+    $btnCloud.Add_Click({
+        if ($grid.SelectedRows.Count -eq 0) { return }
+        $id = [string]$grid.SelectedRows[0].Cells['UserPrincipalName'].Value
+        if (-not $id) { return }
+        $script:Identity = $id; $script:Hours=[int]$hours.Value
+        $cloud = Get-CloudEvidence -User $id | Out-String
+        [Windows.Forms.MessageBox]::Show($cloud, "Cloud Sign-ins - $id") | Out-Null
+    })
 
-    $btnPreview = New-Object Windows.Forms.Button
-    $btnPreview.Text='Unlock Preview'; $btnPreview.SetBounds(410,56,110,28)
-    $btnPreview.Add_Click({ $script:Users=$users.Text.Split(','); Set-Log (Invoke-Unlock -Commit:$false) })
-
-    $btnCommit = New-Object Windows.Forms.Button
-    $btnCommit.Text='Unlock Commit'; $btnCommit.SetBounds(530,56,110,28)
-    $btnCommit.Add_Click({ $script:Users=$users.Text.Split(','); Set-Log (Invoke-Unlock -Commit:$true) })
-
-    $form.Controls.AddRange(@($lblIdentity,$identity,$lblUsers,$users,$lblHours,$hours,$grid,$log,$btnDiscover,$btnLocked,$btnAnalyze,$btnCloud,$btnPreview,$btnCommit))
+    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$hours,$grid,$log,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
+    $form.Add_Shown({ Load-UserGrid })
     [void]$form.ShowDialog()
 }
 
