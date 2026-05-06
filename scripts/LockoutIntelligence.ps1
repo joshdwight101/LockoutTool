@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Discover','Locked','Analyze','UnlockPreview','UnlockCommit','ConnectCloud','CloudSignins','InvestigateUser','ExportReport')]
-    [string]$Mode = 'InvestigateUser',
+    [ValidateSet('Help','Discover','Locked','Analyze','UnlockPreview','UnlockCommit','ConnectCloud','CloudSignins','InvestigateUser','ExportReport')]
+    [string]$Mode = 'Help',
     [string]$Identity,
     [string]$Search,
     [string[]]$Users,
@@ -19,32 +19,36 @@ using System.Linq;
 
 public class LockoutSignal {
   public int EventId { get; set; }
-  public string Machine { get; set; } = "";
-  public string Message { get; set; } = "";
+  public string Machine { get; set; }
+  public string Message { get; set; }
 }
 
 public static class LockoutInferenceEngine
 {
     public static string BuildNarrative(string identity, List<LockoutSignal> signals)
     {
-        int Count(int id) => signals.Count(x => x.EventId == id);
-        var probable = "No strong cause detected.";
+        int c4740 = signals.Count(x => x.EventId == 4740);
+        int c4771 = signals.Count(x => x.EventId == 4771);
+        int c4776 = signals.Count(x => x.EventId == 4776);
+        int c4625 = signals.Count(x => x.EventId == 4625);
+        int c4767 = signals.Count(x => x.EventId == 4767);
+        string probable = "No strong cause detected.";
 
-        if (signals.Any(s => s.EventId == 4771 && s.Message.IndexOf("0x18", StringComparison.OrdinalIgnoreCase) >= 0))
+        if (signals.Any(s => s.EventId == 4771 && (s.Message ?? "").IndexOf("0x18", StringComparison.OrdinalIgnoreCase) >= 0))
             probable = "High confidence: Kerberos bad-password retries (4771 + 0x18).";
         else if (signals.Any(s => s.EventId == 4776))
             probable = "Medium confidence: NTLM source workstation retry pattern (4776).";
         else if (signals.Any(s => s.EventId == 4625))
             probable = "Medium confidence: endpoint/service task credential failure pattern (4625).";
 
-        var topMachines = signals.GroupBy(s => s.Machine)
+        var topMachines = signals.GroupBy(s => s.Machine ?? "unknown")
             .OrderByDescending(g => g.Count())
             .Take(3)
             .Select(g => string.Format("{0} ({1})", g.Key, g.Count()));
 
         return string.Join(Environment.NewLine, new [] {
             string.Format("Lockout Intelligence Report for {0}", identity),
-            string.Format("Events: 4740={0}, 4771={1}, 4776={2}, 4625={3}, 4767={4}", Count(4740), Count(4771), Count(4776), Count(4625), Count(4767)),
+            string.Format("Events: 4740={0}, 4771={1}, 4776={2}, 4625={3}, 4767={4}", c4740, c4771, c4776, c4625, c4767),
             string.Format("Likely cause: {0}", probable),
             string.Format("Top source systems: {0}", string.Join(", ", topMachines))
         });
@@ -204,6 +208,20 @@ function Invoke-ExportReport {
 }
 
 switch ($Mode) {
+    'Help' {
+        @'
+LockoutIntelligence.ps1 modes:
+  Discover
+  Locked
+  Analyze -Identity <user>
+  InvestigateUser -Identity <user>
+  ConnectCloud
+  CloudSignins -Identity <upn>
+  UnlockPreview -Users user1,user2
+  UnlockCommit -Users user1,user2
+  ExportReport -Identity <user> -OutputPath .\report.json
+'@
+    }
     'Discover' { Invoke-Discover }
     'Locked' { Invoke-Locked }
     'Analyze' { Invoke-Analyze }
