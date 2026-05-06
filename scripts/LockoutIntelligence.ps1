@@ -267,26 +267,49 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
     }
 
 
-    function Load-UserGrid {
+    $script:UserCache = @()
+    $script:LastCacheUtc = $null
+
+    function Rebuild-UserCache {
         Ensure-ADModule
-        $items = @()
+        $combined = @()
+
         if ($chkLocked.Checked) {
-            $items += Search-ADAccount -LockedOut -UsersOnly | Get-ADUser -Properties Enabled,LockedOut,LastBadPasswordAttempt,BadLogonCount
-        }
-        if ($chkDisabled.Checked) {
-            $items += Search-ADAccount -AccountDisabled -UsersOnly | Get-ADUser -Properties Enabled,LockedOut,LastBadPasswordAttempt,BadLogonCount
+            foreach ($dc in (Get-ADDomainController -Filter *)) {
+                try {
+                    $dcLocked = Search-ADAccount -LockedOut -UsersOnly -Server $dc.HostName |
+                        Get-ADUser -Server $dc.HostName -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt
+                    $combined += $dcLocked
+                } catch {
+                    Write-Log "WARN: Locked query failed on $($dc.HostName): $($_.Exception.Message)"
+                }
+            }
         }
 
-        $items = $items | Sort-Object SamAccountName -Unique
+        if ($chkDisabled.Checked) {
+            $combined += Search-ADAccount -AccountDisabled -UsersOnly |
+                Get-ADUser -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt
+        }
+
+        $script:UserCache = $combined | Sort-Object SamAccountName -Unique
+        $script:LastCacheUtc = [DateTime]::UtcNow
+        Write-Log "Cache rebuilt with $($script:UserCache.Count) unique users."
+    }
+
+    function Load-UserGrid {
+        if (-not $script:UserCache -or -not $script:LastCacheUtc) { Rebuild-UserCache }
+        $items = $script:UserCache
         if ($txtSearch.Text) {
             $q = [regex]::Escape($txtSearch.Text)
-            $items = $items | Where-Object { $_.SamAccountName -match $q -or $_.UserPrincipalName -match $q -or $_.DisplayName -match $q }
+            $items = $items | Where-Object { $_.SamAccountName -match $q -or $_.UserPrincipalName -match $q -or $_.DisplayName -match $q -or $_.GivenName -match $q -or $_.Surname -match $q }
         }
 
         $table = New-Object System.Data.DataTable
         [void]$table.Columns.Add('Select', [bool])
         [void]$table.Columns.Add('SamAccountName', [string])
         [void]$table.Columns.Add('DisplayName', [string])
+        [void]$table.Columns.Add('FirstName', [string])
+        [void]$table.Columns.Add('LastName', [string])
         [void]$table.Columns.Add('UserPrincipalName', [string])
         [void]$table.Columns.Add('Enabled', [string])
         [void]$table.Columns.Add('LockedOut', [string])
@@ -298,6 +321,8 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
             $r['Select'] = $false
             $r['SamAccountName'] = [string]$u.SamAccountName
             $r['DisplayName'] = [string]$u.DisplayName
+            $r['FirstName'] = [string]$u.GivenName
+            $r['LastName'] = [string]$u.Surname
             $r['UserPrincipalName'] = [string]$u.UserPrincipalName
             $r['Enabled'] = [string]$u.Enabled
             $r['LockedOut'] = [string]$u.LockedOut
@@ -334,8 +359,8 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
     }
 
     $txtSearch.Add_TextChanged({ Invoke-SafeUiAction { Load-UserGrid } })
-    $chkLocked.Add_CheckedChanged({ Invoke-SafeUiAction { Load-UserGrid } })
-    $chkDisabled.Add_CheckedChanged({ Invoke-SafeUiAction { Load-UserGrid } })
+    $chkLocked.Add_CheckedChanged({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
+    $chkDisabled.Add_CheckedChanged({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
 
     $context = New-Object Windows.Forms.ContextMenuStrip
     $context.Items.Add('Run Root Cause Diagnostics').add_Click({ Invoke-SafeUiAction { Analyze-SelectedUser } }) | Out-Null
@@ -349,7 +374,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
 
     $btnRefresh = New-Object Windows.Forms.Button
     $btnRefresh.Text='Refresh Accounts'; $btnRefresh.SetBounds(10,60,140,28)
-    $btnRefresh.Add_Click({ Invoke-SafeUiAction { Load-UserGrid } })
+    $btnRefresh.Add_Click({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
 
     $btnAnalyze = New-Object Windows.Forms.Button
     $btnAnalyze.Text='Analyze Selected'; $btnAnalyze.SetBounds(160,60,130,28)
@@ -375,7 +400,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
     }} )
 
     $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$hours,$grid,$log,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
-    $form.Add_Shown({ Invoke-SafeUiAction { Load-UserGrid } })
+    $form.Add_Shown({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
     [void]$form.ShowDialog()
 }
 
