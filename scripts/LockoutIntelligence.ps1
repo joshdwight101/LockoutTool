@@ -44,6 +44,8 @@ public static class LockoutInferenceEngine
             probable = "Medium confidence: NTLM source workstation retry pattern (4776).";
         else if (signals.Any(s => s.EventId == 4625))
             probable = "Medium confidence: endpoint/service task credential failure pattern (4625).";
+        else if (c4740 > 0)
+            probable = "Low-medium confidence: lockout confirmed (4740). Review Caller Computer Name and adjacent 4771/4776/4625 events on the listed DC(s).";
 
         var topMachines = signals.GroupBy(s => s.Machine ?? "unknown")
             .OrderByDescending(g => g.Count())
@@ -98,14 +100,24 @@ function Invoke-Locked {
 }
 
 function Get-OnPremEvidence {
-    param([Parameter(Mandatory)] [string]$User)
+    param(
+        [Parameter(Mandatory)] [string]$User,
+        [scriptblock]$OnProgress
+    )
     Ensure-ADModule
     $ids = 4740, 4771, 4776, 4625, 4767
     $lookbackHours = [double]$script:Hours
     $start = (Get-Date).AddHours(-1 * $lookbackHours)
 
-    foreach ($dc in Get-ADDomainController -Filter *) {
+    $dcs = @(Get-ADDomainController -Filter *)
+    $totalSteps = [Math]::Max(1, ($dcs.Count * $ids.Count))
+    $step = 0
+    foreach ($dc in $dcs) {
         foreach ($id in $ids) {
+            $step++
+            if ($OnProgress) {
+                & $OnProgress ([Math]::Min(99,[int](($step / $totalSteps) * 100))) "Querying $($dc.HostName) event $id"
+            }
             try {
                 Get-WinEvent -ComputerName $dc.HostName -FilterHashtable @{ LogName='Security'; Id=$id; StartTime=$start } |
                     Where-Object { $_.Message -match [regex]::Escape($User) } |
@@ -313,7 +325,20 @@ GitHub:'
     $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,635,1240,140)
     $log.Anchor = 'Left,Right,Bottom'
 
+    $lblStatus = New-Object Windows.Forms.Label
+    $lblStatus.Text = 'Ready.'
+    $lblStatus.SetBounds(850,90,240,20)
+    $progress = New-Object Windows.Forms.ProgressBar
+    $progress.SetBounds(1090,88,160,22)
+    $progress.Minimum = 0; $progress.Maximum = 100; $progress.Value = 0
+
     function Write-Log([string]$t){ $log.Text = "$(Get-Date -Format T) - $t`r`n" + $log.Text }
+    function Update-UiProgress([int]$Percent,[string]$Status){
+        $p = [Math]::Max(0,[Math]::Min(100,$Percent))
+        $progress.Value = $p
+        $lblStatus.Text = $Status
+        [Windows.Forms.Application]::DoEvents()
+    }
     function Invoke-SafeUiAction([scriptblock]$Action) {
         try { & $Action }
         catch {
@@ -423,7 +448,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
             $r['LastName'] = [string]$u.Surname
             $r['UserPrincipalName'] = [string]$u.UserPrincipalName
             $r['Enabled'] = [string]$u.Enabled
-            $r['LockedOut'] = [string]$u.LockedOut
+            $r['LockedOut'] = [string]([bool]($chkLocked.Checked -or $u.LockedOut))
             $r['BadLogonCount'] = [string]$u.BadLogonCount
             $r['LastBadPasswordAttempt'] = [string]$u.LastBadPasswordAttempt
             $r['LockoutObservedOnDC'] = [string]$u.LockoutObservedOnDC
@@ -440,9 +465,52 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         $name = [string]$grid.SelectedRows[0].Cells['SamAccountName'].Value
         if (-not $name) { return }
         $script:Identity = $name; $script:Hours = [int]$numLookbackHours.Value
-        $result = Invoke-Analyze | Out-String
+        Update-UiProgress 1 "Starting analysis for $name"
+        Write-Log "Analysis started for $name"
+        $events = @(Get-OnPremEvidence -User $name -OnProgress { param($pct,$status) Update-UiProgress $pct $status } | Sort-Object TimeCreated -Descending)
+        Update-UiProgress 100 "Correlating events"
+
+        $signals = [System.Collections.Generic.List[LockoutSignal]]::new()
+        foreach ($e in $events) {
+            if ($e.Id -gt 0) {
+                $s = [LockoutSignal]::new(); $s.EventId = [int]$e.Id; $s.Machine = [string]$e.MachineName; $s.Message = [string]$e.Message
+                [void]$signals.Add($s)
+            }
+        }
+
+        if ($signals.Count -eq 0 -and $events.Count -gt 0) {
+            foreach ($e in $events) {
+                if ($e.Id -eq 4740) {
+                    $s = [LockoutSignal]::new(); $s.EventId = 4740; $s.Machine = [string]$e.SourceDC; $s.Message = [string]$e.Message
+                    [void]$signals.Add($s)
+                }
+            }
+        }
+
+        $narrative = [LockoutInferenceEngine]::BuildNarrative($name, $signals)
+        $timeline = ($events | Select-Object -First 30 SourceDC, TimeCreated, Id, MachineName | Format-Table -AutoSize | Out-String)
+        $result = "$narrative`r`n`r`nOn-prem timeline (latest 30):`r`n$timeline"
+        Show-AnalysisResultDialog -Identity $name -Text $result
+        Update-UiProgress 0 'Ready.'
         Write-Log "Diagnostics complete for $name"
-        [Windows.Forms.MessageBox]::Show($result, "Root Cause Diagnostics - $name") | Out-Null
+    }
+
+    function Show-AnalysisResultDialog {
+        param([string]$Identity,[string]$Text)
+        $dlg = New-Object Windows.Forms.Form
+        $dlg.Text = "Root Cause Diagnostics - $Identity"
+        $dlg.Width = 900; $dlg.Height = 650
+        $txt = New-Object Windows.Forms.TextBox
+        $txt.Multiline = $true; $txt.ScrollBars = 'Both'; $txt.WordWrap = $false; $txt.ReadOnly = $true
+        $txt.SetBounds(10,10,860,540); $txt.Anchor = 'Top,Left,Right,Bottom'; $txt.Text = $Text
+        $btnCopyAll = New-Object Windows.Forms.Button
+        $btnCopyAll.Text = 'Copy Report'; $btnCopyAll.SetBounds(10,560,110,30)
+        $btnCopyAll.Add_Click({ [Windows.Forms.Clipboard]::SetText($txt.Text) })
+        $btnClose = New-Object Windows.Forms.Button
+        $btnClose.Text = 'Close'; $btnClose.SetBounds(780,560,90,30); $btnClose.Anchor = 'Bottom,Right'
+        $btnClose.Add_Click({ $dlg.Close() })
+        $dlg.Controls.AddRange(@($txt,$btnCopyAll,$btnClose))
+        [void]$dlg.ShowDialog()
     }
 
     function Unlock-Checked([bool]$Commit) {
@@ -498,7 +566,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         [Windows.Forms.MessageBox]::Show($cloud, "Cloud Sign-ins - $id") | Out-Null
     }} )
 
-    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$numLookbackHours,$grid,$log,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
+    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$numLookbackHours,$grid,$log,$lblStatus,$progress,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
     $form.Add_Shown({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
     [void]$form.ShowDialog()
 }
