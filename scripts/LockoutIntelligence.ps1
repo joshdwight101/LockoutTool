@@ -180,7 +180,8 @@ function Invoke-Unlock {
         $accounts | Unlock-ADAccount -WhatIf
     }
 
-    [pscustomobject]@{ Timestamp=Get-Date; Mode=($Commit ? 'Commit':'Preview'); Users=$Users -join ',' }
+    $modeLabel = if ($Commit) { 'Commit' } else { 'Preview' }
+    [pscustomobject]@{ Timestamp=Get-Date; Mode=$modeLabel; Users=($Users -join ',') }
 }
 
 function Invoke-ExportReport {
