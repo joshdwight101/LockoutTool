@@ -2,8 +2,8 @@
 
 This repository provides exactly two apps for the same Lockout Intelligence platform:
 
-1. **PowerShell app (with embedded C# intelligence):** `scripts/LockoutIntelligence.ps1`
-2. **C# app:** `src/LockoutHybrid`
+1. **PowerShell GUI app (with embedded C# intelligence):** `scripts/LockoutIntelligence.ps1`
+2. **C# GUI app:** `src/LockoutHybrid`
 
 Both are designed as investigation consoles (not just unlock helpers) with:
 - Multi-DC discovery
@@ -15,7 +15,7 @@ Both are designed as investigation consoles (not just unlock helpers) with:
 
 ## PowerShell + C# Hybrid Tool
 
-### Modes
+### GUI and modes
 - `Discover`
 - `Locked`
 - `Analyze`
@@ -28,6 +28,9 @@ Both are designed as investigation consoles (not just unlock helpers) with:
 
 ### Examples
 ```powershell
+# launch full PowerShell GUI (default)
+./scripts/LockoutIntelligence.ps1
+
 # discover domain controllers
 ./scripts/LockoutIntelligence.ps1 -Mode Discover
 
@@ -54,9 +57,8 @@ Both are designed as investigation consoles (not just unlock helpers) with:
 ## C# app variant
 
 ```bash
-dotnet run --project src/LockoutHybrid -- discover
-dotnet run --project src/LockoutHybrid -- locked --search alice
-dotnet run --project src/LockoutHybrid -- analyze --identity alice
+# launch full C# GUI
+dotnet run --project src/LockoutHybrid
 ```
 
 ## Required prerequisites

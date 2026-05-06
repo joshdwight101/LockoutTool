@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Help','Discover','Locked','Analyze','UnlockPreview','UnlockCommit','ConnectCloud','CloudSignins','InvestigateUser','ExportReport')]
-    [string]$Mode = 'Help',
+    [ValidateSet('Gui','Help','Discover','Locked','Analyze','UnlockPreview','UnlockCommit','ConnectCloud','CloudSignins','InvestigateUser','ExportReport')]
+    [string]$Mode = 'Gui',
     [string]$Identity,
     [string]$Search,
     [string[]]$Users,
@@ -207,7 +207,63 @@ function Invoke-ExportReport {
     Get-Item $OutputPath
 }
 
+
+function Show-LockoutGui {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $form = New-Object Windows.Forms.Form
+    $form.Text = 'Lockout Intelligence - PowerShell GUI'
+    $form.Width = 1200; $form.Height = 760
+
+    $identity = New-Object Windows.Forms.TextBox
+    $identity.SetBounds(10,10,300,25)
+    $identity.PlaceholderText = 'identity'
+
+    $users = New-Object Windows.Forms.TextBox
+    $users.SetBounds(320,10,220,25)
+    $users.PlaceholderText = 'user1,user2'
+
+    $hours = New-Object Windows.Forms.NumericUpDown
+    $hours.SetBounds(550,10,60,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
+
+    $output = New-Object Windows.Forms.TextBox
+    $output.Multiline = $true; $output.ScrollBars = 'Both'; $output.SetBounds(10,80,1160,630)
+
+    function Set-Output($data) {
+        $output.Text = ($data | Out-String)
+    }
+
+    $btnDiscover = New-Object Windows.Forms.Button
+    $btnDiscover.Text='Discover'; $btnDiscover.SetBounds(10,45,90,28)
+    $btnDiscover.Add_Click({ Set-Output (Invoke-Discover) })
+
+    $btnLocked = New-Object Windows.Forms.Button
+    $btnLocked.Text='Locked'; $btnLocked.SetBounds(110,45,90,28)
+    $btnLocked.Add_Click({ $script:Search=''; Set-Output (Invoke-Locked) })
+
+    $btnAnalyze = New-Object Windows.Forms.Button
+    $btnAnalyze.Text='Analyze'; $btnAnalyze.SetBounds(210,45,90,28)
+    $btnAnalyze.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-Output (Invoke-Analyze) })
+
+    $btnCloud = New-Object Windows.Forms.Button
+    $btnCloud.Text='Cloud'; $btnCloud.SetBounds(310,45,90,28)
+    $btnCloud.Add_Click({ $script:Identity=$identity.Text; $script:Hours=[int]$hours.Value; Set-Output (Get-CloudEvidence -User $identity.Text) })
+
+    $btnPreview = New-Object Windows.Forms.Button
+    $btnPreview.Text='Unlock Preview'; $btnPreview.SetBounds(410,45,110,28)
+    $btnPreview.Add_Click({ $script:Users=$users.Text.Split(','); Set-Output (Invoke-Unlock -Commit:$false) })
+
+    $btnCommit = New-Object Windows.Forms.Button
+    $btnCommit.Text='Unlock Commit'; $btnCommit.SetBounds(530,45,110,28)
+    $btnCommit.Add_Click({ $script:Users=$users.Text.Split(','); Set-Output (Invoke-Unlock -Commit:$true) })
+
+    $form.Controls.AddRange(@($identity,$users,$hours,$output,$btnDiscover,$btnLocked,$btnAnalyze,$btnCloud,$btnPreview,$btnCommit))
+    [void]$form.ShowDialog()
+}
+
 switch ($Mode) {
+    'Gui' { Show-LockoutGui }
     'Help' {
         @'
 LockoutIntelligence.ps1 modes:
