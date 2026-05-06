@@ -12,8 +12,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-try { Import-Module ActiveDirectory -ErrorAction Stop } catch { throw "ActiveDirectory module failed to load. Ensure RSAT AD tools are installed and ADWS is reachable. Error: $($_.Exception.Message)" }
-
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -45,14 +43,24 @@ public static class LockoutInferenceEngine
             .Select(g => string.Format("{0} ({1})", g.Key, g.Count()));
 
         return string.Join(Environment.NewLine, new [] {
-            $"Lockout Intelligence Report for {identity}",
-            $"Events: 4740={Count(4740)}, 4771={Count(4771)}, 4776={Count(4776)}, 4625={Count(4625)}, 4767={Count(4767)}",
-            $"Likely cause: {probable}",
-            $"Top source systems: {string.Join(", ", topMachines)}"
+            string.Format("Lockout Intelligence Report for {0}", identity),
+            string.Format("Events: 4740={0}, 4771={1}, 4776={2}, 4625={3}, 4767={4}", Count(4740), Count(4771), Count(4776), Count(4625), Count(4767)),
+            string.Format("Likely cause: {0}", probable),
+            string.Format("Top source systems: {0}", string.Join(", ", topMachines))
         });
     }
 }
 "@
+
+
+function Ensure-ADModule {
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+    }
+    catch {
+        throw "ActiveDirectory module failed to load. Ensure RSAT AD tools are installed and ADWS is reachable. Error: $($_.Exception.Message)"
+    }
+}
 
 function Write-OperatorLog {
     param([string]$Message)
@@ -60,6 +68,7 @@ function Write-OperatorLog {
 }
 
 function Invoke-Discover {
+    Ensure-ADModule
     Write-OperatorLog "Discovering domain controllers and health context."
     $domain = Get-ADDomain -Current LoggedOnUser
     $pdc = $domain.PDCEmulator
@@ -69,6 +78,7 @@ function Invoke-Discover {
 }
 
 function Invoke-Locked {
+    Ensure-ADModule
     Write-OperatorLog "Searching locked users with optional filter."
     Search-ADAccount -LockedOut -UsersOnly |
         Get-ADUser -Properties LockedOut, LastBadPasswordAttempt, BadLogonCount, LastLogonDate |
@@ -80,6 +90,7 @@ function Invoke-Locked {
 }
 
 function Get-OnPremEvidence {
+    Ensure-ADModule
     param([Parameter(Mandatory)] [string]$User)
     $ids = 4740, 4771, 4776, 4625, 4767
     $start = (Get-Date).AddHours(-1 * $Hours)
@@ -168,6 +179,7 @@ function Invoke-InvestigateUser {
 }
 
 function Invoke-Unlock {
+    Ensure-ADModule
     param([bool]$Commit)
     if (-not $Users -or $Users.Count -eq 0) { throw "-Users is required." }
 
