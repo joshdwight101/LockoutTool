@@ -246,6 +246,19 @@ function Show-LockoutGui {
     $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,635,1240,140)
 
     function Write-Log([string]$t){ $log.Text = "$(Get-Date -Format T) - $t`r`n" + $log.Text }
+    function Invoke-SafeUiAction([scriptblock]$Action) {
+        try { & $Action }
+        catch {
+            $msg = $_.Exception.Message
+            Write-Log "ERROR: $msg"
+            [Windows.Forms.MessageBox]::Show("Operation failed.
+
+$msg
+
+Tip: Ensure this workstation can reach a domain controller with AD Web Services (ADWS), or run in offline/cloud-only mode.", "Lockout Intelligence", 'OK', 'Warning') | Out-Null
+        }
+    }
+
 
     function Load-UserGrid {
         Ensure-ADModule
@@ -303,49 +316,49 @@ function Show-LockoutGui {
         Load-UserGrid
     }
 
-    $txtSearch.Add_TextChanged({ Load-UserGrid })
-    $chkLocked.Add_CheckedChanged({ Load-UserGrid })
-    $chkDisabled.Add_CheckedChanged({ Load-UserGrid })
+    $txtSearch.Add_TextChanged({ Invoke-SafeUiAction { Load-UserGrid } })
+    $chkLocked.Add_CheckedChanged({ Invoke-SafeUiAction { Load-UserGrid } })
+    $chkDisabled.Add_CheckedChanged({ Invoke-SafeUiAction { Load-UserGrid } })
 
     $context = New-Object Windows.Forms.ContextMenuStrip
-    $context.Items.Add('Run Root Cause Diagnostics').add_Click({ Analyze-SelectedUser }) | Out-Null
+    $context.Items.Add('Run Root Cause Diagnostics').add_Click({ Invoke-SafeUiAction { Analyze-SelectedUser } }) | Out-Null
     $context.Items.Add('Unlock Selected User (Preview)').add_Click({
-        if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$false)|Out-String) }
+        Invoke-SafeUiAction { if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$false)|Out-String) } }
     }) | Out-Null
     $context.Items.Add('Unlock Selected User (Commit)').add_Click({
-        if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$true)|Out-String); Load-UserGrid }
+        Invoke-SafeUiAction { if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$true)|Out-String); Load-UserGrid } }
     }) | Out-Null
     $grid.ContextMenuStrip = $context
 
     $btnRefresh = New-Object Windows.Forms.Button
     $btnRefresh.Text='Refresh Accounts'; $btnRefresh.SetBounds(10,60,140,28)
-    $btnRefresh.Add_Click({ Load-UserGrid })
+    $btnRefresh.Add_Click({ Invoke-SafeUiAction { Load-UserGrid } })
 
     $btnAnalyze = New-Object Windows.Forms.Button
     $btnAnalyze.Text='Analyze Selected'; $btnAnalyze.SetBounds(160,60,130,28)
-    $btnAnalyze.Add_Click({ Analyze-SelectedUser })
+    $btnAnalyze.Add_Click({ Invoke-SafeUiAction { Analyze-SelectedUser } })
 
     $btnUnlockPreview = New-Object Windows.Forms.Button
     $btnUnlockPreview.Text='Unlock Checked (Preview)'; $btnUnlockPreview.SetBounds(300,60,170,28)
-    $btnUnlockPreview.Add_Click({ Unlock-Checked -Commit:$false })
+    $btnUnlockPreview.Add_Click({ Invoke-SafeUiAction { Unlock-Checked -Commit:$false } })
 
     $btnUnlockCommit = New-Object Windows.Forms.Button
     $btnUnlockCommit.Text='Unlock Checked (Commit)'; $btnUnlockCommit.SetBounds(480,60,170,28)
-    $btnUnlockCommit.Add_Click({ Unlock-Checked -Commit:$true })
+    $btnUnlockCommit.Add_Click({ Invoke-SafeUiAction { Unlock-Checked -Commit:$true } })
 
     $btnCloud = New-Object Windows.Forms.Button
     $btnCloud.Text='Cloud Sign-ins for Selected'; $btnCloud.SetBounds(660,60,180,28)
-    $btnCloud.Add_Click({
+    $btnCloud.Add_Click({ Invoke-SafeUiAction {
         if ($grid.SelectedRows.Count -eq 0) { return }
         $id = [string]$grid.SelectedRows[0].Cells['UserPrincipalName'].Value
         if (-not $id) { return }
         $script:Identity = $id; $script:Hours=[int]$hours.Value
         $cloud = Get-CloudEvidence -User $id | Out-String
         [Windows.Forms.MessageBox]::Show($cloud, "Cloud Sign-ins - $id") | Out-Null
-    })
+    }} )
 
     $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$hours,$grid,$log,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
-    $form.Add_Shown({ Load-UserGrid })
+    $form.Add_Shown({ Invoke-SafeUiAction { Load-UserGrid } })
     [void]$form.ShowDialog()
 }
 
