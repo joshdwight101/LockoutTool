@@ -98,8 +98,8 @@ function Invoke-Locked {
 }
 
 function Get-OnPremEvidence {
-    Ensure-ADModule
     param([Parameter(Mandatory)] [string]$User)
+    Ensure-ADModule
     $ids = 4740, 4771, 4776, 4625, 4767
     $start = (Get-Date).AddHours(-1 * $Hours)
 
