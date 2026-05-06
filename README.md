@@ -1,60 +1,52 @@
 # LockoutTool
 
-Domain Controller and Office365 User Lockout Intelligence Tool.
+A single **Lockout Intelligence** application delivered in two implementations with matching capabilities:
 
-## Implemented deliverables
+1. **Hybrid PowerShell + C# tool** (PowerShell-first app with embedded C# inference engine): `scripts/LockoutIntelligence.ps1`
+2. **Pure C# tool** (managed-only implementation): `src/LockoutPureCSharp`
 
-This repository now includes two working implementations:
+Both variants support:
+- Domain controller discovery
+- Locked-account search + filter
+- Root-cause lockout intelligence from Security logs (4740/4771/4776/4625/4767)
+- Bulk unlock preview and bulk unlock commit
 
-1. **Hybrid PowerShell + C#** (`src/LockoutHybrid`)  
-   * C# host with an embedded PowerShell runspace.
-   * Uses AD cmdlets (`Get-ADDomainController`, `Search-ADAccount`, `Unlock-ADAccount`) through in-process PowerShell.
-   * Implements safe bulk unlock preview (`-WhatIf`) as default unlock behavior.
+## PowerShell + C# Hybrid tool
 
-2. **Pure C# implementation** (`src/LockoutPureCSharp`)  
-   * Uses only .NET APIs for domain discovery, lockout status checks, event-log retrieval, and unlock operations.
-   * Uses `Domain.GetCurrentDomain()`, `PrincipalSearcher` / `UserPrincipal`, and `EventLogReader`.
+The script is a complete operations tool and compiles embedded C# (`Add-Type`) for inference logic.
 
-A companion PowerShell workflow script is also included:
+```powershell
+# Discover domain controllers
+./scripts/LockoutIntelligence.ps1 -Mode Discover
 
-* `scripts/LockoutIntelligence.ps1`
+# Search locked users (filter by partial account)
+./scripts/LockoutIntelligence.ps1 -Mode Locked -Search ali
 
-## Hybrid app usage
+# Analyze one user with root-cause narrative + timeline
+./scripts/LockoutIntelligence.ps1 -Mode Analyze -Identity alice
 
-```bash
-dotnet run --project src/LockoutHybrid -- list-dcs
-dotnet run --project src/LockoutHybrid -- search-locked
-dotnet run --project src/LockoutHybrid -- unlock user1 user2
+# Bulk unlock preview
+./scripts/LockoutIntelligence.ps1 -Mode UnlockPreview -Users alice,bob
+
+# Bulk unlock commit
+./scripts/LockoutIntelligence.ps1 -Mode UnlockCommit -Users alice,bob
 ```
 
-## Pure C# app usage
+## Pure C# tool
 
 ```bash
 dotnet run --project src/LockoutPureCSharp -- list-dcs
 dotnet run --project src/LockoutPureCSharp -- search-locked
 dotnet run --project src/LockoutPureCSharp -- events alice
-# performs real unlock for specified users
 dotnet run --project src/LockoutPureCSharp -- unlock user1 user2
 ```
 
-## PowerShell script usage
+## Optional C# host for AD PowerShell runspace
 
-```powershell
-# Discover domain controllers
-./scripts/LockoutIntelligence.ps1 -Mode DiscoverDCs
+A C# host for in-process PowerShell (`src/LockoutHybrid`) is included for teams that want the same workflows from a .NET executable and can be extended to a desktop UI shell.
 
-# Find locked users
-./scripts/LockoutIntelligence.ps1 -Mode SearchLocked
+## Runtime notes
 
-# Correlate lockout events (4740/4771/4776/4625/4767)
-./scripts/LockoutIntelligence.ps1 -Mode Correlate -Identity alice
-
-# Preview bulk unlock
-./scripts/LockoutIntelligence.ps1 -Mode UnlockPreview -Users alice,bob
-```
-
-## Notes
-
-* Both implementations are designed for **Windows domain-admin runtime environments** with the required RSAT/AD module and audit/log access.
-* The hybrid version is optimized for compatibility with existing operational PowerShell playbooks.
-* The pure C# version is optimized for a future desktop UX where all logic can remain in managed code.
+- Windows domain environment required.
+- ActiveDirectory module required for hybrid PowerShell operations.
+- Appropriate rights and event-log RPC/firewall access are required for remote DC evidence collection.
