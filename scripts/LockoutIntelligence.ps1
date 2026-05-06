@@ -217,7 +217,7 @@ function Show-LockoutGui {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'Lockout Intelligence v1.0 - by Joshua Dwight'
+    $form.Text = 'Lockout Intelligence v1.1 - by Joshua Dwight'
     $form.Width = 1280; $form.Height = 820
 
     $menu = New-Object Windows.Forms.MenuStrip
@@ -253,8 +253,20 @@ Tips:
 
     $helpAbout = New-Object Windows.Forms.ToolStripMenuItem('About')
     $helpAbout.Add_Click({
-        $about = "Lockout Intelligence v1.0`nAuthor: Joshua Dwight`nGitHub: https://github.com/joshdwight101"
-        [Windows.Forms.MessageBox]::Show($about, 'About Lockout Intelligence') | Out-Null
+        $aboutForm = New-Object Windows.Forms.Form
+        $aboutForm.Text = 'About Lockout Intelligence'
+        $aboutForm.Width = 460; $aboutForm.Height = 220
+        $lbl = New-Object Windows.Forms.Label
+        $lbl.Text = 'Lockout Intelligence v1.1
+Author: Joshua Dwight
+GitHub:'
+        $lbl.SetBounds(15,15,420,60)
+        $link = New-Object Windows.Forms.LinkLabel
+        $link.Text = 'https://github.com/joshdwight101'
+        $link.SetBounds(15,80,360,24)
+        $link.Add_LinkClicked({ Start-Process 'https://github.com/joshdwight101' })
+        $aboutForm.Controls.AddRange(@($lbl,$link))
+        [void]$aboutForm.ShowDialog()
     })
 
     [void]$helpMenu.DropDownItems.Add($helpContents)
@@ -288,13 +300,16 @@ Tips:
     $grid.AllowUserToDeleteRows = $false
     $grid.SelectionMode = 'FullRowSelect'
     $grid.MultiSelect = $false
-    $grid.AutoSizeColumnsMode = 'Fill'
+    $grid.AutoSizeColumnsMode = 'DisplayedCells'
+    $grid.ScrollBars = 'Both'
+    $grid.Anchor = 'Top,Left,Right,Bottom'
     $grid.BackgroundColor = [System.Drawing.Color]::White
     $grid.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
     $grid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Black
 
     $log = New-Object Windows.Forms.TextBox
     $log.Multiline = $true; $log.ScrollBars = 'Vertical'; $log.SetBounds(10,635,1240,140)
+    $log.Anchor = 'Left,Right,Bottom'
 
     function Write-Log([string]$t){ $log.Text = "$(Get-Date -Format T) - $t`r`n" + $log.Text }
     function Invoke-SafeUiAction([scriptblock]$Action) {
@@ -330,10 +345,21 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
                 try {
                     $dcLocked = Search-ADAccount -LockedOut -UsersOnly -Server $dc.HostName |
                         Get-ADUser -Server $dc.HostName -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt
+                    foreach ($u in $dcLocked) { $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue $dc.HostName -Force }
                     $combined += $dcLocked
                 } catch {
                     Write-Log "WARN: Locked query failed on $($dc.HostName): $($_.Exception.Message)"
                 }
+            }
+
+            # fallback against default domain controller for environments where Search-ADAccount misses locked objects
+            try {
+                $fallback = Get-ADUser -Filter * -Properties LockedOut,GivenName,Surname,DisplayName,UserPrincipalName,Enabled,BadLogonCount,LastBadPasswordAttempt |
+                    Where-Object { $_.LockedOut -eq $true }
+                foreach ($u in $fallback) { if (-not $u.PSObject.Properties['LockoutObservedOnDC']) { $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue 'DefaultDC' -Force } }
+                $combined += $fallback
+            } catch {
+                Write-Log "WARN: Locked fallback query failed: $($_.Exception.Message)"
             }
         }
 
@@ -366,6 +392,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         [void]$table.Columns.Add('LockedOut', [string])
         [void]$table.Columns.Add('BadLogonCount', [string])
         [void]$table.Columns.Add('LastBadPasswordAttempt', [string])
+        [void]$table.Columns.Add('LockoutObservedOnDC', [string])
 
         foreach ($u in $items) {
             $r = $table.NewRow()
@@ -379,6 +406,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
             $r['LockedOut'] = [string]$u.LockedOut
             $r['BadLogonCount'] = [string]$u.BadLogonCount
             $r['LastBadPasswordAttempt'] = [string]$u.LastBadPasswordAttempt
+            $r['LockoutObservedOnDC'] = [string]$u.LockoutObservedOnDC
             [void]$table.Rows.Add($r)
         }
 

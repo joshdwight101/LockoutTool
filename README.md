@@ -87,3 +87,8 @@ dotnet run --project src/LockoutHybrid
 - **Remote event log access errors**: verify DC firewall rules for Remote Event Log Management and RPC.
 - **`Get-MgAuditLogSignIn` permission errors**: consent required Graph scopes and reconnect via `ConnectCloud` mode.
 - **No cloud results**: use UPN format for `-Identity` (for example `alice@contoso.com`).
+
+
+## Versioning
+
+Version history is tracked in `CHANGELOG.md`.
