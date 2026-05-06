@@ -12,7 +12,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module ActiveDirectory -ErrorAction Stop
+try { Import-Module ActiveDirectory -ErrorAction Stop } catch { throw "ActiveDirectory module failed to load. Ensure RSAT AD tools are installed and ADWS is reachable. Error: $($_.Exception.Message)" }
 
 Add-Type -TypeDefinition @"
 using System;
@@ -42,7 +42,7 @@ public static class LockoutInferenceEngine
         var topMachines = signals.GroupBy(s => s.Machine)
             .OrderByDescending(g => g.Count())
             .Take(3)
-            .Select(g => $"{g.Key} ({g.Count()})");
+            .Select(g => string.Format("{0} ({1})", g.Key, g.Count()));
 
         return string.Join(Environment.NewLine, new [] {
             $"Lockout Intelligence Report for {identity}",
