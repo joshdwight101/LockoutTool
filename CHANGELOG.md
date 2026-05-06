@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.1] - 2026-05-06
+### Fixed
+- Resolved analyze/diagnostics runtime failure caused by NumericUpDown shadowing the `$Hours` value.
+- Updated lockout source mapping so `LockoutObservedOnDC` reports the earliest observed lockout DC per user instead of listing all DCs.
+- Hardened lookback-hour calculations in on-prem and cloud evidence collection by coercing to numeric values.
+
 ## [1.2.0] - 2026-05-06
 ### Added
 - Per-user `LockoutObservedOnDC` aggregation from multi-DC lockout queries.

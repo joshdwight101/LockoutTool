@@ -101,7 +101,8 @@ function Get-OnPremEvidence {
     param([Parameter(Mandatory)] [string]$User)
     Ensure-ADModule
     $ids = 4740, 4771, 4776, 4625, 4767
-    $start = (Get-Date).AddHours(-1 * $Hours)
+    $lookbackHours = [double]$script:Hours
+    $start = (Get-Date).AddHours(-1 * $lookbackHours)
 
     foreach ($dc in Get-ADDomainController -Filter *) {
         foreach ($id in $ids) {
@@ -127,7 +128,8 @@ function Connect-CloudGraph {
 function Get-CloudEvidence {
     param([Parameter(Mandatory)] [string]$User)
 
-    $start = (Get-Date).AddHours(-1 * $Hours).ToString("o")
+    $lookbackHours = [double]$script:Hours
+    $start = (Get-Date).AddHours(-1 * $lookbackHours).ToString("o")
     $filter = "userPrincipalName eq '$User' and createdDateTime ge $start"
 
     try {
@@ -290,8 +292,8 @@ GitHub:'
     $lblHours = New-Object Windows.Forms.Label
     $lblHours.Text='Diagnostic Lookback Hours:'
     $lblHours.SetBounds(530,32,180,20)
-    $hours = New-Object Windows.Forms.NumericUpDown
-    $hours.SetBounds(530,52,90,25); $hours.Minimum=1; $hours.Maximum=72; $hours.Value=8
+    $numLookbackHours = New-Object Windows.Forms.NumericUpDown
+    $numLookbackHours.SetBounds(530,52,90,25); $numLookbackHours.Minimum=1; $numLookbackHours.Maximum=72; $numLookbackHours.Value=8
 
     $grid = New-Object Windows.Forms.DataGridView
     $grid.SetBounds(10,120,1240,505)
@@ -348,8 +350,10 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
                     $dcLocked = Get-ADUser -Server $dc.HostName -LDAPFilter '(&(objectCategory=person)(objectClass=user)(lockoutTime>=1))' -Properties GivenName,Surname,DisplayName,UserPrincipalName,Enabled,LockedOut,BadLogonCount,LastBadPasswordAttempt,lockoutTime
                     foreach ($u in $dcLocked) {
                         $key = [string]$u.SamAccountName
-                        if (-not $dcMap.ContainsKey($key)) { $dcMap[$key] = New-Object System.Collections.Generic.List[string] }
-                        if (-not $dcMap[$key].Contains($dc.HostName)) { $dcMap[$key].Add($dc.HostName) }
+                        $lockoutTime = if ($u.lockoutTime) { [DateTime]::FromFileTimeUtc([int64]$u.lockoutTime) } else { [DateTime]::MaxValue }
+                        if (-not $dcMap.ContainsKey($key) -or $lockoutTime -lt $dcMap[$key].Time) {
+                            $dcMap[$key] = [pscustomobject]@{ DC = $dc.HostName; Time = $lockoutTime }
+                        }
                         $combined += $u
                     }
                 } catch {
@@ -363,8 +367,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
                     Where-Object { $_.LockedOut -eq $true }
                 foreach ($u in $fallback) {
                     $key = [string]$u.SamAccountName
-                    if (-not $dcMap.ContainsKey($key)) { $dcMap[$key] = New-Object System.Collections.Generic.List[string] }
-                    if (-not $dcMap[$key].Contains('DefaultDC')) { $dcMap[$key].Add('DefaultDC') }
+                    if (-not $dcMap.ContainsKey($key)) { $dcMap[$key] = [pscustomobject]@{ DC = 'DefaultDC'; Time = [DateTime]::MaxValue } }
                     $combined += $u
                 }
             } catch {
@@ -375,7 +378,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
             foreach ($u in $combined) {
                 $key = [string]$u.SamAccountName
                 if ($dcMap.ContainsKey($key)) {
-                    $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue (($dcMap[$key] | Sort-Object -Unique) -join ',') -Force
+                    $u | Add-Member -NotePropertyName LockoutObservedOnDC -NotePropertyValue $dcMap[$key].DC -Force
                 }
             }
         }
@@ -436,7 +439,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         if ($grid.SelectedRows.Count -eq 0) { return }
         $name = [string]$grid.SelectedRows[0].Cells['SamAccountName'].Value
         if (-not $name) { return }
-        $script:Identity = $name; $script:Hours = [int]$hours.Value
+        $script:Identity = $name; $script:Hours = [int]$numLookbackHours.Value
         $result = Invoke-Analyze | Out-String
         Write-Log "Diagnostics complete for $name"
         [Windows.Forms.MessageBox]::Show($result, "Root Cause Diagnostics - $name") | Out-Null
@@ -490,12 +493,12 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         if ($grid.SelectedRows.Count -eq 0) { return }
         $id = [string]$grid.SelectedRows[0].Cells['UserPrincipalName'].Value
         if (-not $id) { return }
-        $script:Identity = $id; $script:Hours=[int]$hours.Value
+        $script:Identity = $id; $script:Hours=[int]$numLookbackHours.Value
         $cloud = Get-CloudEvidence -User $id | Out-String
         [Windows.Forms.MessageBox]::Show($cloud, "Cloud Sign-ins - $id") | Out-Null
     }} )
 
-    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$hours,$grid,$log,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
+    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$numLookbackHours,$grid,$log,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
     $form.Add_Shown({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
     [void]$form.ShowDialog()
 }
