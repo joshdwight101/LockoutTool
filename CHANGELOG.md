@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.3] - 2026-05-06
+### Fixed
+- Updated unlock workflow to prioritize direct unlock execution and post-action lock state verification per user.
+- Improved diagnostics report presentation with structured summary + events grid and copy buttons.
+- Added root-cause summary fields for suspected originating DC and caller computer extracted from 4740 evidence.
+- Removed preview-first UX from GUI unlock actions to streamline direct unlock operations.
+
 ## [1.2.2] - 2026-05-06
 ### Fixed
 - Improved LockedOut column behavior in locked-user views to better reflect lockout-focused filtering.

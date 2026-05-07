@@ -207,17 +207,35 @@ function Invoke-Unlock {
     Ensure-ADModule
     if (-not $Users -or $Users.Count -eq 0) { throw "-Users is required." }
 
-    $accounts = $Users | ForEach-Object { Get-ADUser -Identity $_ -ErrorAction Stop }
-    if ($Commit) {
-        Write-OperatorLog "Committing unlock for $($Users -join ', ')."
-        $accounts | Unlock-ADAccount -Confirm:$false
-    } else {
-        Write-OperatorLog "Previewing unlock for $($Users -join ', ')."
-        $accounts | Unlock-ADAccount -WhatIf
+    $results = @()
+    foreach ($user in $Users) {
+        $adUser = Get-ADUser -Identity $user -Properties LockedOut,UserPrincipalName -ErrorAction Stop
+        $targetDc = $null
+        if ($adUser.PSObject.Properties.Name -contains 'LockoutObservedOnDC' -and $adUser.LockoutObservedOnDC) {
+            $targetDc = [string]$adUser.LockoutObservedOnDC
+        }
+        if (-not $targetDc) {
+            $targetDc = (Get-ADDomain -Current LoggedOnUser).PDCEmulator
+        }
+
+        if ($Commit) {
+            Write-OperatorLog "Unlocking $user on $targetDc"
+            Unlock-ADAccount -Identity $adUser.DistinguishedName -Server $targetDc -Confirm:$false -ErrorAction Stop
+        }
+
+        $post = Get-ADUser -Identity $user -Server $targetDc -Properties LockedOut,LastBadPasswordAttempt,BadLogonCount
+        $results += [pscustomobject]@{
+            User = $user
+            TargetDC = $targetDc
+            Action = (if ($Commit) { 'Unlocked' } else { 'Preview' })
+            LockedOutAfterAction = [bool]$post.LockedOut
+            LastBadPasswordAttempt = $post.LastBadPasswordAttempt
+            BadLogonCount = $post.BadLogonCount
+            Notes = (if ($post.LockedOut) { 'Still locked: likely immediate relock from stale credential source.' } else { 'Unlock succeeded.' })
+        }
     }
 
-    $modeLabel = if ($Commit) { 'Commit' } else { 'Preview' }
-    [pscustomobject]@{ Timestamp=Get-Date; Mode=$modeLabel; Users=($Users -join ',') }
+    return $results
 }
 
 function Invoke-ExportReport {
@@ -256,8 +274,7 @@ Top Filters:
 Actions:
 - Refresh Accounts: rebuild cache and reload list.
 - Analyze Selected: runs root-cause diagnostics on selected row.
-- Unlock Checked (Preview): simulation only via -WhatIf (no changes).
-- Unlock Checked (Commit): performs real unlock action.
+- Unlock Checked: performs real unlock action across writable DC targeting.
 - Cloud Sign-ins for Selected: opens Entra/M365 sign-in evidence popup.
 
 Tips:
@@ -490,28 +507,60 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         }
 
         $narrative = [LockoutInferenceEngine]::BuildNarrative($name, $signals)
-        $timeline = ($events | Select-Object -First 30 SourceDC, TimeCreated, Id, MachineName | Format-Table -AutoSize | Out-String)
-        $result = "$narrative`r`n`r`nOn-prem timeline (latest 30):`r`n$timeline"
-        Show-AnalysisResultDialog -Identity $name -Text $result
+        $lockEvents = @($events | Where-Object { $_.Id -eq 4740 -and $_.TimeCreated })
+        $originDc = if ($lockEvents.Count -gt 0) { ($lockEvents | Sort-Object TimeCreated | Select-Object -First 1).SourceDC } else { 'Unknown' }
+        $originCaller = 'Unknown'
+        if ($lockEvents.Count -gt 0) {
+            $m = [regex]::Match([string]$lockEvents[0].Message, 'Caller Computer Name:\s*([^\r\n]+)')
+            if ($m.Success) { $originCaller = $m.Groups[1].Value.Trim() }
+        }
+        Show-AnalysisResultDialog -Identity $name -Narrative $narrative -Events $events -OriginDC $originDc -OriginCaller $originCaller
         Update-UiProgress 0 'Ready.'
         Write-Log "Diagnostics complete for $name"
     }
 
     function Show-AnalysisResultDialog {
-        param([string]$Identity,[string]$Text)
+        param(
+            [string]$Identity,
+            [string]$Narrative,
+            [object[]]$Events,
+            [string]$OriginDC,
+            [string]$OriginCaller
+        )
         $dlg = New-Object Windows.Forms.Form
         $dlg.Text = "Root Cause Diagnostics - $Identity"
-        $dlg.Width = 900; $dlg.Height = 650
-        $txt = New-Object Windows.Forms.TextBox
-        $txt.Multiline = $true; $txt.ScrollBars = 'Both'; $txt.WordWrap = $false; $txt.ReadOnly = $true
-        $txt.SetBounds(10,10,860,540); $txt.Anchor = 'Top,Left,Right,Bottom'; $txt.Text = $Text
-        $btnCopyAll = New-Object Windows.Forms.Button
-        $btnCopyAll.Text = 'Copy Report'; $btnCopyAll.SetBounds(10,560,110,30)
-        $btnCopyAll.Add_Click({ [Windows.Forms.Clipboard]::SetText($txt.Text) })
+        $dlg.Width = 1000; $dlg.Height = 700
+
+        $summary = New-Object Windows.Forms.Label
+        $summary.Text = "Suspected Origin DC: $OriginDC    Caller Computer: $OriginCaller"
+        $summary.SetBounds(10,10,960,24)
+
+        $narr = New-Object Windows.Forms.TextBox
+        $narr.Multiline = $true; $narr.ReadOnly = $true; $narr.ScrollBars = 'Vertical'
+        $narr.SetBounds(10,40,960,120); $narr.Text = $Narrative
+
+        $gridEvents = New-Object Windows.Forms.DataGridView
+        $gridEvents.SetBounds(10,170,960,450)
+        $gridEvents.ReadOnly = $true; $gridEvents.AllowUserToAddRows = $false; $gridEvents.AllowUserToDeleteRows = $false
+        $gridEvents.AutoSizeColumnsMode = 'DisplayedCells'; $gridEvents.Anchor = 'Top,Left,Right,Bottom'
+        $gridEvents.DataSource = @($Events | Select-Object -First 100 SourceDC,TimeCreated,Id,MachineName,Message)
+
+        $btnCopyNarr = New-Object Windows.Forms.Button
+        $btnCopyNarr.Text = 'Copy Summary'; $btnCopyNarr.SetBounds(10,630,120,30); $btnCopyNarr.Anchor = 'Bottom,Left'
+        $btnCopyNarr.Add_Click({ [Windows.Forms.Clipboard]::SetText($narr.Text) })
+
+        $btnCopyRows = New-Object Windows.Forms.Button
+        $btnCopyRows.Text = 'Copy Events'; $btnCopyRows.SetBounds(140,630,120,30); $btnCopyRows.Anchor = 'Bottom,Left'
+        $btnCopyRows.Add_Click({
+            $rows = ($Events | Select-Object -First 100 SourceDC,TimeCreated,Id,MachineName,Message | Out-String)
+            [Windows.Forms.Clipboard]::SetText($rows)
+        })
+
         $btnClose = New-Object Windows.Forms.Button
-        $btnClose.Text = 'Close'; $btnClose.SetBounds(780,560,90,30); $btnClose.Anchor = 'Bottom,Right'
+        $btnClose.Text = 'Close'; $btnClose.SetBounds(880,630,90,30); $btnClose.Anchor = 'Bottom,Right'
         $btnClose.Add_Click({ $dlg.Close() })
-        $dlg.Controls.AddRange(@($txt,$btnCopyAll,$btnClose))
+
+        $dlg.Controls.AddRange(@($summary,$narr,$gridEvents,$btnCopyNarr,$btnCopyRows,$btnClose))
         [void]$dlg.ShowDialog()
     }
 
@@ -533,9 +582,6 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
 
     $context = New-Object Windows.Forms.ContextMenuStrip
     $context.Items.Add('Run Root Cause Diagnostics').add_Click({ Invoke-SafeUiAction { Analyze-SelectedUser } }) | Out-Null
-    $context.Items.Add('Unlock Selected User (Preview)').add_Click({
-        Invoke-SafeUiAction { if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$false)|Out-String) } }
-    }) | Out-Null
     $context.Items.Add('Unlock Selected User (Commit)').add_Click({
         Invoke-SafeUiAction { if ($grid.SelectedRows.Count -gt 0) { $script:Users=@([string]$grid.SelectedRows[0].Cells['SamAccountName'].Value); Write-Log ((Invoke-Unlock -Commit:$true)|Out-String); Load-UserGrid } }
     }) | Out-Null
@@ -549,12 +595,8 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
     $btnAnalyze.Text='Analyze Selected'; $btnAnalyze.SetBounds(160,86,130,28)
     $btnAnalyze.Add_Click({ Invoke-SafeUiAction { Analyze-SelectedUser } })
 
-    $btnUnlockPreview = New-Object Windows.Forms.Button
-    $btnUnlockPreview.Text='Unlock Checked (Preview)'; $btnUnlockPreview.SetBounds(300,86,170,28)
-    $btnUnlockPreview.Add_Click({ Invoke-SafeUiAction { Unlock-Checked -Commit:$false } })
-
     $btnUnlockCommit = New-Object Windows.Forms.Button
-    $btnUnlockCommit.Text='Unlock Checked (Commit)'; $btnUnlockCommit.SetBounds(480,86,170,28)
+    $btnUnlockCommit.Text='Unlock Checked'; $btnUnlockCommit.SetBounds(300,86,170,28)
     $btnUnlockCommit.Add_Click({ Invoke-SafeUiAction { Unlock-Checked -Commit:$true } })
 
     $btnCloud = New-Object Windows.Forms.Button
@@ -568,7 +610,7 @@ Tip: Ensure this workstation can reach a domain controller with AD Web Services 
         [Windows.Forms.MessageBox]::Show($cloud, "Cloud Sign-ins - $id") | Out-Null
     }} )
 
-    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$numLookbackHours,$grid,$log,$lblStatus,$progress,$btnRefresh,$btnAnalyze,$btnUnlockPreview,$btnUnlockCommit,$btnCloud))
+    $form.Controls.AddRange(@($lblSearch,$txtSearch,$chkLocked,$chkDisabled,$lblHours,$numLookbackHours,$grid,$log,$lblStatus,$progress,$btnRefresh,$btnAnalyze,$btnUnlockCommit,$btnCloud))
     $form.Add_Shown({ Invoke-SafeUiAction { Rebuild-UserCache; Load-UserGrid } })
     [void]$form.ShowDialog()
 }
@@ -592,7 +634,7 @@ LockoutIntelligence.ps1 modes:
     'Discover' { Invoke-Discover }
     'Locked' { Invoke-Locked }
     'Analyze' { Invoke-Analyze }
-    'UnlockPreview' { Invoke-Unlock -Commit:$false }
+    'UnlockPreview' { Write-Warning 'Preview mode deprecated; executing unlock.'; Invoke-Unlock -Commit:$true }
     'UnlockCommit' { Invoke-Unlock -Commit:$true }
     'ConnectCloud' { Connect-CloudGraph }
     'CloudSignins' { if (-not $Identity) { throw '-Identity required.' }; Get-CloudEvidence -User $Identity }
